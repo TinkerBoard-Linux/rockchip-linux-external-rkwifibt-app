@@ -55,15 +55,15 @@ static command_t wifi_config_command_table[] = {
 	{"", NULL},
 	{"wifi open                 	(num_index)", rk_wifi_open},
 	{"wifi close                	(num_index)", rk_wifi_close},
-	{"wifi connect              	(num_index input ssid:password)", rk_wifi_connect},
+	{"wifi connect              	(num_index input ssid password WPA/WPA3/WEP/NONE)", rk_wifi_connect},
 	{"wifi get saved info       	(num_index)", rk_wifi_getSavedInfo},
-	{"wifi get currit conn info 	(num_index)", rk_wifi_getConnectionInfo},
-	{"wifi connect with ssid    	(num_index input ssid)", rk_wifi_connect_with_ssid},
+	{"wifi get currit info      	(num_index)", rk_wifi_getConnectionInfo},
+	{"wifi connect with ssid    	(num_index input ssid WPA/WPA3/WEP/NONE)", rk_wifi_connect_with_ssid},
 	{"wifi cancel               	(num_index)", rk_wifi_cancel},
-	{"wifi forget with ssid     	(num_index)", rk_wifi_forget_with_ssid},
-	{"wifi discon currit ssid   	(num_index)", rk_wifi_disconnect},
+	{"wifi forget with ssid     	(num_index input ssid WPA/WPA3/WEP/NONE))", rk_wifi_forget_with_ssid},
+	{"wifi discon               	(num_index)", rk_wifi_disconnect},
 	{"wifi version              	(num_index)", rk_wifi_version},
-	{"wifi open                 	(num_index)", rk_wifi_onoff_test},
+	{"wifi switch test          	(num_index)", rk_wifi_onoff_test},
 };
 
 static void show_wifi_cmd() {
@@ -131,6 +131,9 @@ static void main_loop_stop(int sig)
 	struct sigaction sigact = { .sa_handler = SIG_DFL };
 	sigaction(sig, &sigact, NULL);
 	main_loop_flag = false;
+
+	//bt_test_bluetooth_deinit(NULL);
+	//exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state");
 }
 
 int main(int argc, char *argv[])

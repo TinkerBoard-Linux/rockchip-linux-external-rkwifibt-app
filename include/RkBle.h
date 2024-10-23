@@ -7,6 +7,8 @@
 extern "C" {
 #endif
 
+void rk_ble_service_changed(void);
+
 /**
  * @ingroup  rk_bt_basic
  * @brief  rk_ble_send_notify

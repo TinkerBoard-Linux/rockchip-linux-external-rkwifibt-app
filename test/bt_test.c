@@ -10,7 +10,6 @@
 #include <RkBtSink.h>
 #include <RkBtSource.h>
 #include <RkBle.h>
-#include <RkBtSpp.h>
 #include <RkBleClient.h>
 
 //vendor code for broadcom
@@ -62,8 +61,14 @@ int vendor_set_high_priority(char *ba, uint8_t priority, uint8_t direction);
 /* Data Source: UUID 22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB (notifiable) */
 #define ANCS_DATA_SOURCE "22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB"
 
-static struct timeval start, now;
-static ssize_t totalBytes;
+static bool ancs_is_support = false;
+static bool ancs_is_enable = false;
+static uint16_t last_info = 0;
+
+static int spp_fd = 0;
+
+//static struct timeval start, now;
+//static ssize_t totalBytes;
 
 static void bt_test_ble_recv_data_callback(const char *uuid, char *data, int *len, RK_BLE_GATT_STATE state);
 
@@ -83,6 +88,13 @@ static volatile bool ble_direct_flag = false;
  */
 static RkBtContent bt_content;
 
+static void bt_init_static_var(void)
+{
+	ancs_is_support = false;
+	ancs_is_enable = false;
+	ble_direct_flag = false;
+}
+
 /* BT base api */
 
 void at_evt_callback(char *at_evt);
@@ -94,6 +106,35 @@ gboolean bt_open_rfcomm(gpointer data)
 
 	return false;
 }
+
+/*
+gboolean bt_reenable_ancs(gpointer data)
+{
+	//ble paired && connect == true
+	printf("	ble info: 0x%x\n", rdev->info & 0x0F00);
+	if (((last_info & 0x0F00) != 0x0F00) &&
+		((rdev->info & 0x0F00) == 0x0F00)) {
+		RK_BLE_CLIENT_SERVICE_INFO info;
+		printf("	ble addr: %s\n", rdev->remote_address);
+		if (!rk_ble_client_get_service_info(rdev->remote_address, &info)) {
+			printf("	service cnt: %d\n", info.service_cnt);
+			for(int i = 0; i < info.service_cnt; i++) {
+				printf("	search ancs: %s\n", info.service[i].uuid);
+				if (!strcasecmp("7905F431-B5CE-4E99-A40F-4B1E122D00D0",
+					info.service[i].uuid))
+					ancs_is_support = true;
+			}
+		} else
+			printf("	get service info failed\n");
+	
+		if (ancs_is_support && ancs_is_enable) {
+			bool notifying = rk_ble_client_is_notifying(ANCS_NOTIFICATION_SOURCE);
+			printf("%s notifying %s\n", ANCS_NOTIFICATION_SOURCE, notifying ? "yes" : "no");
+			rk_ble_client_ancs(true);
+		}
+	}
+}
+*/
 
 gboolean bt_reconect_last_dev(gpointer data)
 {
@@ -128,7 +169,7 @@ gboolean bt_reconect_last_dev(gpointer data)
 		if (!rdev[i].connected && rdev[i].paired) {
 			//printf("Reconnect device %s\n", rdev[i].remote_address);
 			//rk_adapter_connect(rdev[i].remote_address, NULL);
-			//rk_bt_connect_by_addr(rdev[i].remote_address);
+			rk_bt_connect_by_addr(rdev[i].remote_address, "bredr");
 			return false;
 		}
 	}
@@ -142,7 +183,7 @@ gboolean bt_reconect_last_dev(gpointer data)
  * !!!The rdev of some events is NULL. You must determine whether rdev is NULLL, otherwise a crash will occur.
  * !!!某些event的rdev是NULL，必须判断rdev是否为NULLL,否则会出现crash
  */
-static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
+void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 {
 	switch (state) {
 	//BASE STATE
@@ -171,8 +212,13 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 		break;
 	case RK_BT_STATE_SCAN_CHG_REMOTE_DEV:
 		if (rdev != NULL) {
-			printf("+ SCAN_CHG_DEV: [%s|%d]:%s:%s|%s\n", rdev->remote_address, rdev->rssi,
-					rdev->remote_address_type, rdev->remote_alias, rdev->change_name);
+			printf("+ %s: addr: %s, rssi: %d, type: %s, name: %s|%s\n",
+					rdev->connected ? "CONN_CHG_DEV" : "SCAN_CHG_DEV",
+					rdev->remote_address,
+					rdev->rssi,
+					rdev->remote_address_type,
+					rdev->remote_alias,
+					rdev->change_name);
 
 			if (!strcmp(rdev->change_name, "UUIDs")) {
 				for (int index = 0; index < 36; index++) {
@@ -188,6 +234,18 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 				printf("\tModalias: %s\n", rdev->modalias);
 			} else if (!strcmp(rdev->change_name, "MTU")) {
 				printf("CONN_CHG_DEV att_mtu: %d\n", rdev->att_mtu);
+				bt_content.ble_content.att_mtu = rdev->att_mtu;
+			} else if (!strcmp(rdev->change_name, "Reason")) {
+				printf("CONN_CHG_DEV dis_dev_addr_type: %s, reason: %s\n",
+						rdev->discon_addr_type ? "ble_device" : "bredr_device",
+						DIS_REASON_ID[rdev->discon_reason]);
+			} else if (!strcmp(rdev->change_name, "ServicesResolved")) {
+				//re-enable ancs
+				if (ancs_is_support && ancs_is_enable && rdev->svc_refreshed) {
+					bool notifying = rk_ble_client_is_notifying(ANCS_NOTIFICATION_SOURCE);
+					printf("%s notifying %s\n", ANCS_NOTIFICATION_SOURCE, notifying ? "yes" : "no");
+					rk_ble_client_ancs(true);
+				}
 			}
 		}
 		break;
@@ -195,13 +253,23 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 		if (rdev != NULL)
 			printf("+ SCAN_DEL_DEV: [%s]:%s:%s\n", rdev->remote_address,
 					rdev->remote_address_type, rdev->remote_alias);
+		//bt_init_static_var();
 		break;
 
 	//LINK STATE
+	case RK_BT_STATE_BLE_CONNECTED:
+	case RK_BT_STATE_BLE_DISCONN:
+		if (rdev != NULL)
+			printf("+ %s [%s|%d]:%s:%s\n", rdev->ble_connected ? "STATE_BLE_CONNECTED" : "STATE_BLE_DISCONNECTED",
+					rdev->remote_address,
+					rdev->rssi,
+					rdev->remote_address_type,
+					rdev->remote_alias);
+		break;
 	case RK_BT_STATE_CONNECTED:
 	case RK_BT_STATE_DISCONN:
 		if (rdev != NULL)
-			printf("+ %s [%s|%d]:%s:%s\n", rdev->connected ? "STATE_CONNECTED" : "STATE_DISCONNECTED",
+			printf("+ %s [%s|%d]:%s:%s\n", rdev->br_connected ? "STATE_CONNECTED" : "STATE_DISCONNECTED",
 					rdev->remote_address,
 					rdev->rssi,
 					rdev->remote_address_type,
@@ -216,19 +284,35 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 		}
 
 		break;
+	case RK_BT_STATE_INFO_CHANGE:
+		if (rdev != NULL) {
+			if (last_info != rdev->info)
+				last_info = rdev->info;
+		}
+
+		break;
+	case RK_BT_STATE_BLE_PAIRED:
+	case RK_BT_STATE_BLE_PAIR_NONE:
+		if (rdev != NULL)
+			printf("+ %s [%s|%d]:%s:%s\n", rdev->ble_paired ? "STATE_BLE_PAIRED" : "STATE_BLE_PAIR_NONE",
+					rdev->remote_address,
+					rdev->rssi,
+					rdev->remote_address_type,
+					rdev->remote_alias);
+		break;
 	case RK_BT_STATE_PAIRED:
 	case RK_BT_STATE_PAIR_NONE:
 		if (rdev != NULL)
-			printf("+ %s [%s|%d]:%s:%s\n", rdev->paired ? "STATE_PAIRED" : "STATE_PAIR_NONE",
+			printf("+ %s [%s|%d]:%s:%s\n", rdev->br_paired ? "STATE_PAIRED" : "STATE_PAIR_NONE",
 					rdev->remote_address,
 					rdev->rssi,
 					rdev->remote_address_type,
 					rdev->remote_alias);
 		break;
 	case RK_BT_STATE_BONDED:
-	case RK_BT_STATE_BOND_NONE:
+	case RK_BT_STATE_BLE_BONDED:
 		if (rdev != NULL)
-			printf("+ %s [%s|%d]:%s:%s\n", rdev->bonded ? "STATE_BONDED" : "STATE_BOND_NONE",
+			printf("+ %s [%s|%d]:%s:%s\n", rdev->br_bonded ? "STATE_BONDED" : "STATE_BLE_BONDED",
 				rdev->remote_address,
 				rdev->rssi,
 				rdev->remote_address_type,
@@ -241,7 +325,6 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 				rdev->remote_address_type,
 				rdev->remote_alias);
 		break;
-	case RK_BT_STATE_BOND_FAILED:
 	case RK_BT_STATE_PAIR_FAILED:
 		printf("+ STATE_BOND/PAIR FAILED\n");
 		break;
@@ -334,8 +417,8 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 				rdev->remote_address_type,
 				rdev->remote_alias);
 			//high priority for broadcom
-			vendor_set_high_priority(rdev->remote_address, ACL_HIGH_PRIORITY,
-								 bt_content.profile & PROFILE_A2DP_SINK_HF ? A2DP_SINK : A2DP_SOURCE);
+			//vendor_set_high_priority(rdev->remote_address, ACL_HIGH_PRIORITY,
+			//					 bt_content.profile & PROFILE_A2DP_SINK_HF ? A2DP_SINK : A2DP_SOURCE);
 		}
 		break;
 	case RK_BT_STATE_TRANSPORT_SUSPENDING:
@@ -462,14 +545,34 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 		bt_content.power = false;
 		printf("RK_BT_STATE_ADAPTER_POWER_OFF successful\n");
 		break;
-
+	case RK_BT_STATE_ADAPTER_LOCAL_NAME:
+		printf("RK_BT_STATE_ADAPTER_LOCAL_NAME successful\n");
+		break;
 	case RK_BT_STATE_COMMAND_RESP_OK:
 		printf("RK_BT_STATE CMD OK\n");
 		break;
 	case RK_BT_STATE_COMMAND_RESP_ERR:
 		printf("RK_BT_STATE CMD ERR\n");
 		break;
-
+	case RK_BT_STATE_ANCS:
+		ancs_is_support = true;
+		printf("RK_BT_STATE_ANCS\n");
+		break;
+	case RK_BT_STATE_SPP_CONNECTED:
+		spp_fd = (int)rdev;
+		printf("RK_BT_STATE_SPP_CONNECTED [fd: %d]\n", spp_fd);
+		write(spp_fd, "hello spp from client", strlen("hello spp from client"));
+		break;
+	case RK_BT_STATE_SPP_RECV_DATA:
+		printf("RK_BT_STATE_SPP_RECV_DATA\n");
+		int len = *((int *)rdev);
+		char *data = (char *)rdev + 4;
+		printf("SPP DATA[%d]: %s\n", len, data);
+		write(spp_fd, data, len);
+		break;
+	case RK_BT_STATE_SPP_DISCONNECTED:
+		printf("RK_BT_STATE_SPP_DISCONNECTED\n");
+		break;
 	default:
 		if (rdev != NULL)
 			printf("+ DEFAULT STATE %d: %s:%s:%s RSSI: %d [CBP: %d:%d:%d]\n", state,
@@ -484,9 +587,12 @@ static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
 	}
 }
 
+//char abc[1];
 void bt_test_version(char *data)
 {
 	printf("RK BT VERSION: %s\n", rk_bt_version());
+	//test AddressSanitizer
+	//abc[99] = 1;
 }
 
 void bt_test_source_play(char *data)
@@ -551,7 +657,7 @@ static bool bt_test_audio_server_cb(bool enable)
 	/* restart bluealsa */
 	kill_task("bluealsa");
 	kill_task("bluealsa-aplay");
-	kill_task("pulseaudio");
+	//kill_task("pulseaudio");
 
 	/*
 	 * Start bluealsa service with the appropriate profile
@@ -559,16 +665,304 @@ static bool bt_test_audio_server_cb(bool enable)
 	 */
 	if ((bt_content.profile & PROFILE_A2DP_SINK_HF) == PROFILE_A2DP_SINK_HF) {
 		exec_command_system("bluealsa -S --profile=a2dp-sink --profile=hfp-hf &");
+		//exec_command_system("bluealsa -S --profile=a2dp-sink &");
 		exec_command_system("bluealsa-aplay -S --profile-a2dp 00:00:00:00:00:00 &");
+		//exec_command_system("bluealsa-aplay -S --profile-sco 00:00:00:00:00:00 &");
 	} else if ((bt_content.profile & PROFILE_A2DP_SOURCE_AG) == PROFILE_A2DP_SOURCE_AG) {
 		exec_command_system("bluealsa -S --profile=a2dp-source --profile=hfp-ag --a2dp-volume &");
 	}
 
-	/* Wait for 100ms */
-	usleep(100 * 1000);
 	/* Reconnect last device */
-	g_idle_add(bt_reconect_last_dev, NULL);
+	//g_timeout_add_seconds(2, bt_reconect_last_dev, NULL);
 
+	return true;
+}
+
+/* For buildroot OS:
+ * The wifibt-init.sh or bt_init.sh used for hci0 init/stop
+ */
+#define BUILDROOT_OS	1
+
+/* For Debian OS:
+ *	The script /usr/bin/wifibt-init.sh used for hci0 init/stop
+ *	The "systemctl start/stop bluetoothd" used for bluetoothd init/stop
+ */
+#define DEBIAN_OS		2
+
+/* For Custom: Third BT vendor
+ * power control:
+ * exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state && sleep 0.5 && echo 1 > /sys/class/rfkill/rfkill0/state");
+ * exec_command_system("hciconfig_vendor/dev/ttyS1 &");
+ */
+#define CUSTOM_INIT		3
+
+static bool bt_init_realek(int os)
+{
+	/* 需要Realtek提供定制的firmware
+	 * Realtek SCO OVER PCM
+	 * Realtek:
+	 * 8KHZ PCM采样率
+	 * 16bit data位
+	 * slave模式（clk由主控提供)
+	 * data采用msb模式
+	 * short frame sync 短同步
+	 * fs 下降沿开始发送和接收data
+	 * fs 之间2个slot，然后有效数据在第一个slot
+	 * clk 频率为：2 * 16 * 8 = 256KHZ
+	 */
+	/* Bluetooth Controller Init: firmware download and to create hci0 */
+	/* Reset BT_REG_ON */
+	exec_command_system("insmod hci_uart.ko");
+	kill_task("rtk_hciattach");
+	exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state && sleep 0.6 && echo 1 > /sys/class/rfkill/rfkill0/state");
+	exec_command_system("rtk_hciattach -n -s 115200 /dev/ttyS1 rtk_h5 &");
+
+	//Ensure hci0 exist
+	int times = 100;
+	do {
+		if (access("/sys/class/bluetooth/hci0", F_OK) == 0)
+			break;
+		usleep(100 * 1000);
+
+		if (times == 0) {
+			printf("ERR: hci0 not init!\n");
+			return false;
+		}
+	} while (times--);
+
+	return true;
+}
+
+static bool bt_init_broadocm(int os)
+{
+	/* stop necessary services */
+	kill_task("brcm_patchram_plus1");
+	//kill_task("rtk_hciattach");
+	//exec_command_system("rmmod hci_uart.ko");
+	/*
+	* exec brcm_patchram_plus1 to init hci0 for broadcom chip!
+	*
+	* if hfp profile is used: (only for broadcom chip)
+	* if you use SCO PCM 8K: you should use：--scopcm=0,1,0,0,0,0,0,3,0,0
+	* if you use SCO PCM 16K(mSBC): you should use --scopcm=0,2,0,0,0,0,0,3,0,0
+	* 
+	* scopcm:
+	* sco_routing: sco_routing is 0 for PCM, 1 for Transport, 2 for Codec and 3 for I2S
+	* pcm_interface_rate is 0 for 128KBps, 1 for 256 KBps, 2 for 512KBps, 3 for 1024KBps, and 4 for 2048Kbps
+	* frame_type is 0 for short and 1 for long
+	* sync_mode is 0 for slave and 1 for master
+	* clock_mode is 0 for slave and 1 for master
+	* lsb_first is 0 for false aand 1 for true
+	* fill_bits is the value in decimal for unused bits
+	* fill_method is 0 for 0's and 1 for 1's, 2 for signed and 3 for programmable
+	* fill_num is the number or bits to fill
+	* right_justify is 0 for false and 1 for true
+	* 
+	* i2s: --i2s=0,0,1,2
+	* i2s_enable is 0 for disable and 1 for enable
+	* is_master is 0 for slave and 1 for master
+	* sample_rate is 0 for 8KHz, 1 for 16Khz and 2 for 4 KHz
+	* clock_rate is 0 for 128KHz, 1 for 256KHz, 2 for 512 KHz, 3 for 1024 KHz and 4 for 2048 KHz.
+	* 
+	//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,1,0,1,1,0,0,3,0,0 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS1 &");
+	//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,1,1,0,0,3,0,0 --i2s=0,1,1,2 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS4 &");
+	//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,0,0,0,0,3,0,0 --i2s=0,0,1,2 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS1 &");
+	//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,1,1,0,0,3,0,0 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS4 &");
+	*/
+	/* Bluetooth Controller Init: firmware download and to create hci0 */
+	/* Reset BT_REG_ON */
+	kill_task("brcm_patchram_plus1");
+	exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state && sleep 0.6 && echo 1 > /sys/class/rfkill/rfkill0/state");
+	exec_command_system("brcm_patchram_plus1 --enable_hci \
+		--scopcm=0,2,0,1,1,0,0,3,0,0 --i2s=0,1,1,2 --no2bytes \
+		--use_baudrate_for_download --tosleep 200000 --baudrate 1500000 \
+		--patchram /lib/firmware/ /dev/ttyS4 &");
+
+	//Ensure hci0 exist
+	int times = 100;
+	do {
+		if (access("/sys/class/bluetooth/hci0", F_OK) == 0)
+			break;
+		usleep(100 * 1000);
+
+		if (times == 0) {
+			printf("ERR: hci0 not init!\n");
+			return false;
+		}
+	} while (times--);
+
+	return true;
+}
+
+//第三方的BT模块: 找蓝牙原厂或模块厂获取“如何初始化蓝牙的文档”
+//蓝牙的文档，里面会有如何初始化的描述，一般都会有厂家定制的hciattach初始化程序
+static bool bt_init_third_vendor(void)
+{
+	int times = 100;
+
+	//NOTE: 还有的蓝牙厂家(希微)是kernel初始化的，比如加载xxx.ko后，内核自动生成hci0节点，此时无需做任何事情
+	bool hci0_by_kernel = false;
+	if (hci0_by_kernel)
+		goto hci0;
+
+	/* Reset BT_REG_ON */
+	exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state && sleep 0.6 && echo 1 > /sys/class/rfkill/rfkill0/state");
+
+	//使用厂家提供的命令替换下面的rtk_hciattach及其参数，每家的参数不一样
+	kill_task("vendor_hciattach");
+	/* Bluetooth Controller Init: firmware download and to create hci0 */
+	exec_command_system("vendor_hciattach -n -s 115200 /dev/ttyS1 xxx &");
+
+hci0:
+	//Ensure hci0 exist
+	do {
+		if (access("/sys/class/bluetooth/hci0", F_OK) == 0)
+			break;
+		usleep(100 * 1000);
+
+		if (times == 0) {
+			printf("ERR: hci0 not init!\n");
+			return false;
+		}
+	} while (times--);
+
+	return true;
+}
+
+static bool bt_init_common(int os)
+{
+	/* waiting for hci0 exited */
+	int times = 100;
+
+	if (os > DEBIAN_OS)
+		return true;
+
+	kill_task("brcm_patchram_plus1");
+	kill_task("rtk_hciattach");
+	kill_task("rk_hciattach");
+
+	do {
+		if (access("/sys/class/bluetooth/hci0", F_OK) != 0)
+			break;
+		usleep(100 * 1000);
+
+		if (times == 0) {
+			printf("hci0 not exited!\n");
+			return false;
+		}
+	} while (times--);
+
+	/* Bluetooth Controller Init: firmware download and to create hci0 */
+	if (os == BUILDROOT_OS) {
+		if (!access("/usr/bin/wifibt-init.sh", F_OK))
+			exec_command_system("/usr/bin/wifibt-init.sh");
+		else if (!access("/usr/bin/bt_init.sh", F_OK))
+			exec_command_system("/usr/bin/bt_init.sh");
+	} 
+
+	//if (os == DEBIAN_OS) {
+	//	exec_command_system("sudo systemctl restart bluetooth");
+	//}
+
+	//waiting for hci0
+	times = 100;
+	do {
+		if (access("/sys/class/bluetooth/hci0", F_OK) == 0)
+			break;
+		usleep(100 * 1000);
+
+		if (times == 0) {
+			printf("ERR: hci0 not init!\n");
+			return false;
+		}
+	} while (times--);
+
+	return true;
+}
+
+/*
+ * Start bluetoothd
+ */
+static bool bt_start_bluetoothd(int os, bool debug_mode)
+{
+	int times = 100;
+
+	if (os == DEBIAN_OS) {
+		exec_command_system("sudo killall bluetoothd");
+		exec_command_system("sudo bluetoothd -n -P battery,hostname,gap,wiimote -f /data/main.conf &");
+		goto bluetoothd;
+	}
+
+	kill_task("bluetoothd");
+	kill_task("obexd");
+
+	if (debug_mode) {
+		exec_command_system("btmon -w /data/btsnoop.log > /dev/null &");
+		exec_command_system("/usr/libexec/bluetooth/bluetoothd -n -P \
+			battery,hostname,gap,wiimote \
+			-f /data/main.conf \
+			--debug=plugins/policy.c,src/adapter.c,src/device.c &");
+	} else {
+		exec_command_system("/usr/libexec/bluetooth/bluetoothd -C -n -P profile,battery,hostname,gap,wiimote -f /data/main.conf &");
+	}
+
+bluetoothd:
+	//waiting for bluetoothd
+	times = 100;
+	do {
+		if (get_ps_pid("bluetoothd"))
+			break;
+
+		usleep(100 *1000);
+
+		if (times == 0) {
+			printf("bluetoothd not init!\n");
+			return false;
+		}
+	} while (times--);
+
+	//debug
+	usleep(500 * 1000);
+
+	//obexd
+	if (bt_content.profile & PROFILE_OBEX) {
+		exec_command_system("export $(dbus-launch)");
+		exec_command_system("/usr/libexec/bluetooth/obexd -r /userdata/ -a -n &");
+		//debug: exec_command_system("/usr/libexec/bluetooth/obexd -r /userdata/ -a -n -d &");
+		//check bluetoothd
+		times = 100;
+		do {
+			if (get_ps_pid("obexd"))
+				break;
+			usleep(100 *1000);
+
+			if (times == 0) {
+				printf("obexd not init!\n");
+				return false;
+			}
+		} while (times--);
+	}
+
+	return true;
+}
+
+static bool bt_deinit_vendor(void)
+{
+	//CLEAN
+	exec_command_system("/etc/init.d/S40bluetooth stop");
+
+	kill_task("bluetoothd");
+	kill_task("obexd");
+
+	//audio server deinit
+	kill_task("bluealsa");
+	kill_task("bluealsa-alay");
+
+	//vendor deinit
+	//exec_command_system("hciconfig hci0 down sleep 0.2");
+	kill_task("brcm_patchram_plus1");
+	kill_task("rtk_hciattach");
+	kill_task("rk_hciattach");
 	return true;
 }
 
@@ -583,317 +977,208 @@ static bool bt_test_audio_server_cb(bool enable)
  *
  * @return true if successful, false otherwise
  * 
- * NOTE: That function must ensue that the hci0 node appears and the bluetoothd process is running.
- * NOTE: That function must ensue that the hci0 node appears and the bluetoothd process is running.
- * NOTE: That function must ensue that the hci0 node appears and the bluetoothd process is running.
+ * if enable == true
+ *  NOTE: This function ensures that the Bluetooth hci0 node is generated and the bluetoothd daemon is running
+ *  NOTE: This function ensures that the Bluetooth hci0 node is generated and the bluetoothd daemon is running
+ *  NOTE: This function ensures that the Bluetooth hci0 node is generated and the bluetoothd daemon is running
  */
-static bool bt_test_vendor_cb(bool enable)
+bool bt_test_vendor_cb(bool enable)
 {
-	int times = 100;
-
-	/* For buildroot OS:
-	 *  The wifibt-init.sh or bt_init.sh used for hci0 init/stop
-	 *  The /etc/init.d/S40bluetooth or /etc/init.d/S40bluetoothd used for bluetoothd init/stop
+	/* Debug info:
+	 * bluetoothd -d ==> /var/log/messages
+	 * btmon -w /data/btsnoop.log
 	 */
-	bool Buildroot_OS = false;
+	bool debug_mode = true;
 
-	/* For Debian OS:
-	 *  The script /usr/bin/wifibt-init.sh used for hci0 init/stop
-	 *  The "systemctl start/stop bluetoothd" used for bluetoothd init/stop
+	/* SDK Supported OS: buildroot | Debian */
+	int bt_os = BUILDROOT_OS;
+
+	/* 
+	 * Third-party Bluetooth modules
+	 * SDK Support BT: Broadcom(新思/英飞凌/Rockchip(rk960)), third_bt必须为false;
+	 * 当需要支持第三方蓝牙模块：比如AIC/高拓/希微等蓝牙模块，third_bt为true;
 	 */
-	bool Debian_OS = false;
+	bool third_bt = false;
 
-	/* For Custom: only for broadcom chip
-	 * hci0 init/stop:
-	 * 	exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state && sleep 0.5 && echo 1 > /sys/class/rfkill/rfkill0/state");
-	 *  exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,0,0,0,0,3,0,0 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS1 &");
-	 * 
-	 * bluetoothd init/stop:
-	 *  exec_command_system("/usr/libexec/bluetooth/bluetoothd -n -P battery -d &");
-	 *  exec_command_system("killall bluetoothd");
-	 */
-	bool Custom_OS = false;
+	printf("OS: %d, DEBUG: %d, Third: %d\n", bt_os, debug_mode, third_bt);
 
-	//Custom_OS = true;
-	Buildroot_OS = true;
-
-	if (enable) {
-		/* stop necessary services */
-		kill_task("brcm_patchram_plus1");
-		kill_task("rtk_hciattach");
-		kill_task("bluetoothd");
-		kill_task("obexd");
-
-		if (1)
-			exec_command_system("btmon -w /data/btsnoop.log > /dev/null &");
-
-		/* waiting for hci0 exited */
-		if (0) {
-			times = 100;
-			do {
-				if (access("/sys/class/bluetooth/hci0", F_OK) != 0)
-					break;
-				usleep(100 * 1000);
-
-				if (times == 0) {
-					printf("hci0 not exited!\n");
-					return false;
-				}
-			} while (times--);
-		}
-
-		/* Bluetooth Controller Init: firmware download and to create hci0 */
-		if (Buildroot_OS) {
-			if (!access("/usr/bin/wifibt-init.sh", F_OK))
-				exec_command_system("/usr/bin/wifibt-init.sh");
-			else if (!access("/usr/bin/bt_init.sh", F_OK))
-				exec_command_system("/usr/bin/bt_init.sh");
-		} if (Debian_OS) {
-			exec_command_system("sudo systemctl restart bluetooth");
-		} else if (Custom_OS) {
-			/* Reset BT_REG_ON */
-			exec_command_system("echo 0 > /sys/class/rfkill/rfkill0/state && sleep 0.5 && echo 1 > /sys/class/rfkill/rfkill0/state");
-			/* 
-			 * exec brcm_patchram_plus1 to init hci0 for broadcom chip!
-			 *
-			 * if hfp profile is used: (only for broadcom chip)
-			 * if you use SCO PCM 8K: you should use：--scopcm=0,1,0,0,0,0,0,3,0,0
-			 * if you use SCO PCM 16K(mSBC): you should use --scopcm=0,2,0,0,0,0,0,3,0,0
-			 * 
-			 * scopcm:
-			 * sco_routing: sco_routing is 0 for PCM, 1 for Transport, 2 for Codec and 3 for I2S
-			 * pcm_interface_rate is 0 for 128KBps, 1 for 256 KBps, 2 for 512KBps, 3 for 1024KBps, and 4 for 2048Kbps
-			 * frame_type is 0 for short and 1 for long
-			 * sync_mode is 0 for slave and 1 for master
-			 * clock_mode is 0 for slave and 1 for master
-			 * lsb_first is 0 for false aand 1 for true
-			 * fill_bits is the value in decimal for unused bits
-			 * fill_method is 0 for 0's and 1 for 1's, 2 for signed and 3 for programmable
-			 * fill_num is the number or bits to fill
-			 * right_justify is 0 for false and 1 for true
-			 * 
-			 * i2s: --i2s=0,0,1,2
-			 * i2s_enable is 0 for disable and 1 for enable
-			 * is_master is 0 for slave and 1 for master
-			 * sample_rate is 0 for 8KHz, 1 for 16Khz and 2 for 4 KHz
-			 * clock_rate is 0 for 128KHz, 1 for 256KHz, 2 for 512 KHz, 3 for 1024 KHz and 4 for 2048 KHz.
-			 * 
-			 * Realtek:
-			 * 8KHZ PCM采样率
-			 * 16bit data位
-			 * slave模式（clk由主控提供)
-			 * data采用msb模式
-			 * short frame sync 短同步
-			 * fs 下降沿开始发送和接收data
-			 * fs 之间2个slot，然后有效数据在第一个slot
-			 * clk 频率为：2 * 16 * 8 = 256KHZ
+	if (enable == true) {
+		if (third_bt) {
+			/* 其它第三方SDK还未支持的蓝牙模块
+			 * 都需要根据原厂文档自行初始化
 			 */
-			//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,1,0,1,1,0,0,3,0,0 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS1 &");
-			//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,1,1,0,0,3,0,0 --i2s=0,1,1,2 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS4 &");
-			//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,0,0,0,0,3,0,0 --i2s=0,0,1,2 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS1 &");
-			//exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,1,1,0,0,3,0,0 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS4 &");
-			exec_command_system("brcm_patchram_plus1 --enable_hci --scopcm=0,2,0,1,1,0,0,3,0,0 --i2s=0,1,1,2 --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS4 &");
-			//exec_command_system("brcm_patchram_plus1 --enable_hci --no2bytes --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram /lib/firmware/ /dev/ttyS1 &");
+			bt_init_third_vendor();
+		} else {
+			/* 最新SDK集成了初始化脚本，自动初始化蓝牙, 目前仅支持Realtek/Broadcom/Rockchip
+			 * 如下两种场景:
+			 *  1. 如果旧的SDK没有上述内置的初始化脚本，则可以手动添加初始化流程，只针对broadcom/rtk的模块
+			 *  2. 想配置SCO OVER PCM的参数
+			 *     注意要手动配置UART口
+			 *     bt_init_broadocm(bt_os);
+			 *     bt_init_realek(bt_os);
+			 */
+			bt_init_common(bt_os);
 		}
 
-		//waiting for hci0
-		times = 100;
-		do {
-			if (access("/sys/class/bluetooth/hci0", F_OK) == 0)
-				break;
-			usleep(100 * 1000);
-
-			if (times == 0) {
-				printf("ERR: hci0 not init!\n");
-				return false;
-			}
-		} while (times--);
-
-		//exec_command_system("hciconfig hci0 reset");
-		//exec_command_system("hciconfig hci0 down && sleep 3");
-
-		/*
-		 * Start bluetoothd
-		 *
-		 * DEBUG: vim /etc/init.d/S40bluetooth, modify BLUETOOTHD_ARGS="-n -d"
-
-		 * if (access("/etc/init.d/S40bluetooth", F_OK) == 0)
-		 * 	exec_command_system("/etc/init.d/S40bluetooth restart");
-		 * else if (access("/etc/init.d/S40bluetoothd", F_OK) == 0)
-		 * 	exec_command_system("/etc/init.d/S40bluetoothd restart");
-		 */
-		if (1) {
-			//debug_mode
-			//exec_command_system("/usr/libexec/bluetooth/bluetoothd -n -P battery &");
-			exec_command_system("/usr/libexec/bluetooth/bluetoothd -d -n -P battery,hostname,gap,wiimote -f /data/main.conf &");
-		} else
-			exec_command_system("/usr/libexec/bluetooth/bluetoothd -n -P battery &");
-
-		//waiting for bluetoothd
-		times = 100;
-		do {
-			if (get_ps_pid("bluetoothd"))
-				break;
-
-			usleep(100 *1000);
-
-			if (times == 0) {
-				printf("bluetoothd not init!\n");
-				return false;
-			}
-		} while (times--);
-
-		//obexd
-		if (bt_content.profile & PROFILE_OBEX) {
-			exec_command_system("export $(dbus-launch)");
-			exec_command_system("/usr/libexec/bluetooth/obexd -r /userdata/ -a -n &");
-			//debug: exec_command_system("/usr/libexec/bluetooth/obexd -r /userdata/ -a -n -d &");
-			//check bluetoothd
-			times = 100;
-			do {
-				if (get_ps_pid("obexd"))
-					break;
-				usleep(100 *1000);
-
-				if (times == 0) {
-					printf("obexd not init!\n");
-					return false;
-				}
-			} while (times--);
-		}
+		//Start bluetoothd daemon
+		bt_start_bluetoothd(bt_os, debug_mode);
 	} else {
-		//CLEAN
-		exec_command_system("hciconfig hci0 down");
-		exec_command_system("/etc/init.d/S40bluetooth stop");
-
-		kill_task("bluetoothd");
-		kill_task("obexd");
-
-		//audio server deinit
-		kill_task("bluealsa");
-		kill_task("bluealsa-alay");
-
-		//vendor deinit
-		kill_task("brcm_patchram_plus1");
-		kill_task("rtk_hciattach");
+		bt_deinit_vendor();
 	}
 
 	return true;
 }
 
 /*
-reference: Assigned_Numbers.pdf
+	BT 4.X
+	//LE Set Random Address Command
+	hcitool -i hci0 cmd 0x08 0x0005 41 C5 10 C3 9C 04
 
-BT 5.X
-#Command Code    LE Set Extended Advertising Disable Command
-hcitool -i hci0 cmd 0x08 0x0039  00 01 01 00 00 00
+	//LE SET PARAMETERS
+	hcitool -i hci0 cmd 0x08 0x0006 A0 00 A0 00 00 01 00 00 00 00 00 00 00 07 00
 
-#Command Code    LE Remove Advertising Set Command
-hcitool -i hci0 cmd 0x08 0x003C 01
+	// LE Set Advertising Data Command
+	hcitool -i hci0 cmd 0x08 0x0008 1b 02 01 02 03 03 10 19 13 09 52 4f 43 4b 43 48 49 50 5f 41 55 44 49 4f 5f 42 4c 45
 
-#Command Code    LE Set Extended Advertising Parameters Command
-Advertising_Handle: 				0x01
-Advertising_Event_Properties: 		0x0013     		//00010011  
-													bit0: Connectable advertising
-											 		bit1: Scannable advertising
-											 		bit2: Directed advertising
-													bit3: High Duty Cycle Directed Connectable advertising (≤ 3.75 ms Advertising Interval)
-											 		bit4: Use Legacy advertising PDUs
-											 		bit5: Omit advertiser's address from all PDUs ("anonymous advertising")
-											 		bit6: Include TxPower in the extended header of at least one advertising PDU
-Primary_Advertising_Interval_Min: 	0x0000AO		//Range: 0x000020 to 0xFFFFFF Time = N * 0.625 ms Time Range: 20 ms to 10,485.759375 s
-Primary_Advertising_Interval_Max:	0x0000A0		//Range: 0x000020 to 0xFFFFFF Time = N * 0.625 ms Time Range: 20 ms to 10,485.759375 s
-Primary_Advertising_Channel_Map:	0x07			//bit0: CHAN_37 bit1: CHAN_38 bit2: CHAN_39
-Own_Address_Type:					0x01			//0x00: Public Device Address, 0x01: Random Device Address, 0x02/0x03：Controller generated ...
-Peer_Address_Type:					0x00			//0x00 Public Device Address or Public Identity Address, 0x01: Random Device Address or Random (static) Identity Address
-Peer_Address:						0x00		    //6byte
-Advertising_Filter_Policy:			0x00			//0x00: Process scan and connection requests from all devices (i.e., the White List is not in use)
-Advertising_TX_Power:				0x7F			//Range: -127 to +20, 0x7F: Host has no preference
-Primary_Advertising_PHY:			0x01			//0x01: 1M, 0x03: Le Coded
-Secondary_Advertising_Max_Skip:		0x00			//AUX_ADV_IND shall be sent prior to the next advertising event
-Secondary_Advertising_PHY:			0x01			//0x01: 1M, 0x02: 2M, 0x03: Le Coded
-Advertising_SID:					0x00			//0x00 to 0x0F Value of the Advertising SID subfield in the ADI field of the PDU
-Scan_Request_Notification_Enable:	0x00			//0x00: Scan Request Notification is disabled, 0x01: Scan Request Notification is enabled
+	// LE Set Advertising Resp Data Command
+	hcitool -i hci0 cmd 0x08 0x0009 17 16 ff 46 00 02 1c 02 04 54 01 00 00 08 54 00 00 00 00 00 00 36 01 00
 
-hcitool -i hci0 cmd 0x08 0x0036 01 13 00 A0 00 00 A0 00 00 07 01 00 00 00 00 00 00 00 00 7F 01 00 01 00 00
+	// LE Set Advertise Enable/Disable Command
+	hcitool -i hci0 cmd 0x08 0x000a 1
 
-#Command Code    LE Set Advertising Set Random Address Command
-hcitool -i hci0 cmd 0x08 0x0035 01 45 6E 87 2D 6A 44
+	BT 5.X
+	#Command Code    LE Set Extended Advertising Disable Command
+	hcitool -i hci0 cmd 0x08 0x0039  00 01 01 00 00 00
 
-#Command Code    LE Set Extended Advertising Data Command
-Advertising_Handle: 	0x01
-Options:				0x03
-	Value Parameter Description
-	0x00 Intermediate fragment of fragmented extended advertising data
-	0x01 First fragment of fragmented extended advertising data
-	0x02 Last fragment of fragmented extended advertising data
-	0x03 Complete extended advertising data
-	0x04 Unchanged data (just update the Advertising DID)
-	All other values Reserved for future use
-Fragment_Preference:	0x01
-	Value Parameter Description
-	0x00 The Controller may fragment all Host advertising data
-	0x01 The Controller should not fragment or should minimize fragmentation of 
-	Host advertising data
-	All other values Reserved for future use
+	#Command Code    LE Remove Advertising Set Command
+	hcitool -i hci0 cmd 0x08 0x003C 01
 
-Advertising_Data_Length: 0 to 251 The number of octets in the Advertising Data parameter
+	#Command Code    LE Set Extended Advertising Parameters Command
+	hcitool -i hci0 cmd 0x08 0x0036 01 13 00 A0 00 00 A0 00 00 07 01 00 00 00 00 00 00 00 00 7F 01 00 01 00 00
 
-Advertising_Data: Size: Advertising_Data_Length octets
-hcitool -i hci0 cmd 0x08 0x0037 01 03 01 0x8 09 54 65 73 74 20 4C 46
+	#Command Code    LE Set Advertising Set Random Address Command
+	hcitool -i hci0 cmd 0x08 0x0035 01 45 6E 87 2D 6A 44
 
-#Command Code    LE Set Extended Scan Response Data command
-hcitool -i hci0 cmd 0x08 0x0038
+	#Command Code    LE Set Extended Advertising Data Command
+	hcitool -i hci0 cmd 0x08 0x0037 01 03 01 0D 03 03 0D 18 08 09 54 65 73 74 20 4C 46
 
-#Command Code    LE Set Extended Advertising Enable Command
-hcitool -i hci0 cmd 0x08 0x0039  01 01 01 00 00 00
+	#Command Code    LE Set Extended Advertising Enable Command
+	hcitool -i hci0 cmd 0x08 0x0039  01 01 01 00 00 00
+
+	//
+	reference: Assigned_Numbers.pdf
+
+	BT 5.X
+	#Command Code    LE Set Extended Advertising Disable Command
+	hcitool -i hci0 cmd 0x08 0x0039  00 01 01 00 00 00
+
+	#Command Code    LE Remove Advertising Set Command
+	hcitool -i hci0 cmd 0x08 0x003C 01
+
+	#Command Code    LE Set Extended Advertising Parameters Command
+	Advertising_Handle: 				0x01
+	Advertising_Event_Properties: 		0x0013     		//00010011  
+														bit0: Connectable advertising
+														bit1: Scannable advertising
+														bit2: Directed advertising
+														bit3: High Duty Cycle Directed Connectable advertising (≤ 3.75 ms Advertising Interval)
+														bit4: Use Legacy advertising PDUs
+														bit5: Omit advertiser's address from all PDUs ("anonymous advertising")
+														bit6: Include TxPower in the extended header of at least one advertising PDU
+	Primary_Advertising_Interval_Min: 	0x0000AO		//Range: 0x000020 to 0xFFFFFF Time = N * 0.625 ms Time Range: 20 ms to 10,485.759375 s
+	Primary_Advertising_Interval_Max:	0x0000A0		//Range: 0x000020 to 0xFFFFFF Time = N * 0.625 ms Time Range: 20 ms to 10,485.759375 s
+	Primary_Advertising_Channel_Map:	0x07			//bit0: CHAN_37 bit1: CHAN_38 bit2: CHAN_39
+	Own_Address_Type:					0x01			//0x00: Public Device Address, 0x01: Random Device Address, 0x02/0x03：Controller generated ...
+	Peer_Address_Type:					0x00			//0x00 Public Device Address or Public Identity Address, 0x01: Random Device Address or Random (static) Identity Address
+	Peer_Address:						0x00		    //6byte
+	Advertising_Filter_Policy:			0x00			//0x00: Process scan and connection requests from all devices (i.e., the White List is not in use)
+	Advertising_TX_Power:				0x7F			//Range: -127 to +20, 0x7F: Host has no preference
+	Primary_Advertising_PHY:			0x01			//0x01: 1M, 0x03: Le Coded
+	Secondary_Advertising_Max_Skip:		0x00			//AUX_ADV_IND shall be sent prior to the next advertising event
+	Secondary_Advertising_PHY:			0x01			//0x01: 1M, 0x02: 2M, 0x03: Le Coded
+	Advertising_SID:					0x00			//0x00 to 0x0F Value of the Advertising SID subfield in the ADI field of the PDU
+	Scan_Request_Notification_Enable:	0x00			//0x00: Scan Request Notification is disabled, 0x01: Scan Request Notification is enabled
+
+	hcitool -i hci0 cmd 0x08 0x0036 01 13 00 A0 00 00 A0 00 00 07 01 00 00 00 00 00 00 00 00 7F 01 00 01 00 00
+
+	#Command Code    LE Set Advertising Set Random Address Command
+	hcitool -i hci0 cmd 0x08 0x0035 01 45 6E 87 2D 6A 44
+
+	#Command Code    LE Set Extended Advertising Data Command
+	Advertising_Handle: 	0x01
+	Options:				0x03
+		Value Parameter Description
+		0x00 Intermediate fragment of fragmented extended advertising data
+		0x01 First fragment of fragmented extended advertising data
+		0x02 Last fragment of fragmented extended advertising data
+		0x03 Complete extended advertising data
+		0x04 Unchanged data (just update the Advertising DID)
+		All other values Reserved for future use
+	Fragment_Preference:	0x01
+		Value Parameter Description
+		0x00 The Controller may fragment all Host advertising data
+		0x01 The Controller should not fragment or should minimize fragmentation of 
+		Host advertising data
+		All other values Reserved for future use
+
+	Advertising_Data_Length: 0 to 251 The number of octets in the Advertising Data parameter
+
+	Advertising_Data: Size: Advertising_Data_Length octets
+	hcitool -i hci0 cmd 0x08 0x0037 01 03 01 0x8 09 54 65 73 74 20 4C 46
+
+	#Command Code    LE Set Extended Scan Response Data command
+	hcitool -i hci0 cmd 0x08 0x0038
+
+	#Command Code    LE Set Extended Advertising Enable Command
+	hcitool -i hci0 cmd 0x08 0x0039  01 01 01 00 00 00
 
 
-BT 4.X
-Advertising_Interval_Min
-Advertising_Interval_Max
-Advertising_Type
-Own_Address_Type			//0x00: Public Device Address, 
-							//0x01: Random Device Address,
-							//0x02: Controller generates Resolvable Private Address based on the local IRK from the resolving list.
-									If the resolving list contains no matching entry, use the public address.
-							//0x03: Controller generates Resolvable Private Address based on the local IRK from the resolving list
-									If the resolving list contains no matching entry, use the random address from LE_Set_Random_Address
-Peer_Address_Type
-Peer_Address
-Advertising_Channel_Map
-Advertising_Filter_Policy
+	BT 4.X
+	Advertising_Interval_Min
+	Advertising_Interval_Max
+	Advertising_Type
+	Own_Address_Type			//0x00: Public Device Address, 
+								//0x01: Random Device Address,
+								//0x02: Controller generates Resolvable Private Address based on the local IRK from the resolving list.
+										If the resolving list contains no matching entry, use the public address.
+								//0x03: Controller generates Resolvable Private Address based on the local IRK from the resolving list
+										If the resolving list contains no matching entry, use the random address from LE_Set_Random_Address
+	Peer_Address_Type
+	Peer_Address
+	Advertising_Channel_Map
+	Advertising_Filter_Policy
 
-DEVICE ADDRESS
-Devices are identified using a device address and an address type
+	DEVICE ADDRESS
+	Devices are identified using a device address and an address type
 
-A device shall use at least one type of device address and may contain both.
+	A device shall use at least one type of device address and may contain both.
 
-A device's Identity Address is a Public Device Address or Random Static 
-Device Address that it uses in packets it transmits. If a device is using 
-Resolvable Private Addresses, it shall also have an Identity Address.
+	A device's Identity Address is a Public Device Address or Random Static 
+	Device Address that it uses in packets it transmits. If a device is using 
+	Resolvable Private Addresses, it shall also have an Identity Address.
 
-Whenever two device addresses are compared, the comparison shall include 
-the device address type (i.e. if the two addresses have different types, they are 
-different even if the two 48-bit addresses are the same).
+	Whenever two device addresses are compared, the comparison shall include 
+	the device address type (i.e. if the two addresses have different types, they are 
+	different even if the two 48-bit addresses are the same).
 
-1/ Public device address
-	The public device address shall be created in accordance with [Vol 2] Part B, 
-	Section 1.2, with the exception that the restriction on LAP values does not 
-	apply unless the public device address will also be used as a BD_ADDR for a 
-	BR/EDR Controller.
+	1/ Public device address
+		The public device address shall be created in accordance with [Vol 2] Part B, 
+		Section 1.2, with the exception that the restriction on LAP values does not 
+		apply unless the public device address will also be used as a BD_ADDR for a 
+		BR/EDR Controller.
 
-2/ Random device address
-	The random device address may be of either of the following:
-	• Static address
-	• Private address.
+	2/ Random device address
+		The random device address may be of either of the following:
+		• Static address
+		• Private address.
 
-	Address [47:46] Sub-Type
-	0b00 			Non-resolvable private address
-	0b01 			Resolvable private address
-	0b10 			Reserved for future use
-	0b11 			Static device address
+		Address [47:46] Sub-Type
+		0b00 			Non-resolvable private address
+		0b01 			Resolvable private address
+		0b10 			Reserved for future use
+		0b11 			Static device address
 */
+
 //#define BLE_ADV_CUSTOM
 static int ble_direct_set_adv_param(char *ble_name , char *ble_mac_addr)
 {
@@ -996,8 +1281,17 @@ static int ble_direct_close_adv(void)
 	return 1;
 }
 
+static void auth_func(uint8_t *confirm, uint32_t *code)
+{
+	//confirm
+	*confirm = 1;
+
+	if (code)
+		printf("code: %06u\n", *code);
+}
+
 #define BT_CONF_DIR "/data/main.conf"
-static int create_bt_conf(struct bt_conf *conf)
+int create_bt_conf(struct bt_conf *conf)
 {
 	FILE* fp;
 	char cmdline[256] = {0};
@@ -1043,10 +1337,32 @@ static int create_bt_conf(struct bt_conf *conf)
 	sprintf(cmdline, "JustWorksRepairing = %s\n", conf->JustWorksRepairing);
 	fputs(cmdline, fp);
 
-	fputs("[GATT]\n", fp);
-	//#Cache = always 
-	fputs("Cache = always", fp);
+	//"SecureConnections"
+	if (conf->SecureConnections) {
+		sprintf(cmdline, "SecureConnections = %s\n", conf->SecureConnections);
+		fputs(cmdline, fp);
+	}
 
+	//fputs("Experimental = true\n", fp);
+	fputs("[GATT]\n", fp);
+
+	//#Cache = always 
+	if (conf->gatt_client_cache) {
+		memset(cmdline, 0, sizeof(cmdline));
+		sprintf(cmdline, "Cache = %s\n", conf->gatt_client_cache);
+		fputs(cmdline, fp);
+	}
+
+	if (conf->gatt_client) {
+		memset(cmdline, 0, sizeof(cmdline));
+		sprintf(cmdline, "Client = %s\n", conf->gatt_client);
+		fputs(cmdline, fp);
+	}
+
+	sprintf(cmdline, "Privacy = on\n");
+	fputs(cmdline, fp);
+
+	fputs("\n", fp);
 	fclose(fp);
 
 	system("cat /data/main.conf");
@@ -1054,10 +1370,11 @@ static int create_bt_conf(struct bt_conf *conf)
 }
 
 /* bt init */
-void *bt_test_init(void *arg)
+int bt_test_init(void *arg)
 {
 	struct bt_conf conf;
 	RkBleGattService *gatt;
+	FILE *fp;
 
 	/* 
 	 * "read"
@@ -1068,31 +1385,48 @@ void *bt_test_init(void *arg)
 	 * "encrypt-read"
 	 */
 	static char *chr_props[] = { "read", "write", "notify", "write-without-response", NULL };
+	static char *chr_notify_props[] = {"notify", NULL };
 
 	printf("%s \n", __func__);
 
 	//Must determine whether Bluetooth is turned on
 	if (rk_bt_is_open()) {
 		printf("%s: already open \n", __func__);
-		return NULL;
+		return -1;
 	}
 
 	memset(&bt_content, 0, sizeof(RkBtContent));
 
 	//BREDR CLASS BT NAME
-	bt_content.bt_name = "Pixoo-audio";
-
-	//BREDR PINCODE
-	bt_content.pincode = "1234";
+	memset(bt_content.bt_name, 0, sizeof(bt_content.bt_name));
+	strcpy(bt_content.bt_name, "rkbt");
 
 	//BLE NAME
-	bt_content.ble_content.ble_name = "Pixoo-ble";
+	memset(bt_content.ble_content.ble_name, 0, sizeof(bt_content.ble_content.ble_name));
+	strcpy(bt_content.ble_content.ble_name, "rkble");
+
+	//1234
+	fp = fopen("/data/bt_id.txt", "r");
+	if (fp) {
+		char bt_id[6];
+		fscanf(fp, "%s", bt_id); // Read the MAC address
+		fclose(fp);
+
+		char buf[38];
+		memset(buf, 0, sizeof(buf));
+		snprintf(buf, sizeof(buf), "%s_%s", bt_content.bt_name, bt_id);
+		memcpy(bt_content.bt_name, buf, sizeof(bt_content.bt_name));
+
+		memset(buf, 0, sizeof(buf));
+		snprintf(buf, sizeof(buf), "%s_%s", bt_content.ble_content.ble_name, bt_id);
+		memcpy(bt_content.ble_content.ble_name, buf, sizeof(bt_content.ble_content.ble_name));
+	}
 
 	//IO CAPABILITY
 	bt_content.io_capability = IO_CAPABILITY_DISPLAYYESNO;
 
 	//OBEX: OPP(File transfer)/PBAP/MAP
-	//bt_content.profile |= PROFILE_OBEX;
+	bt_content.profile |= PROFILE_OBEX;
 
 	/*
 	 * Only one can be enabled
@@ -1100,7 +1434,7 @@ void *bt_test_init(void *arg)
 	 * a2dp source and hfp-ag
 	 */
 	bt_content.profile |= PROFILE_A2DP_SINK_HF;
-	bt_content.bluealsa = true;
+	bt_content.bluealsa = true; //false: pulseaudio
 
 	// enable ble
 	bt_content.profile |= PROFILE_BLE;
@@ -1113,10 +1447,11 @@ void *bt_test_init(void *arg)
 		gatt->chr_uuid[0].chr_props = chr_props;
 
 		gatt->chr_uuid[1].uuid = BLE_UUID_RECV;
-		gatt->chr_uuid[1].chr_props = chr_props;
+		gatt->chr_uuid[1].chr_props = chr_notify_props;
 		gatt->chr_cnt = 2;
 
 		//SERVICE_UUID1
+		/*
 		gatt = &(bt_content.ble_content.gatt_instance[1]);
 		gatt->server_uuid.uuid = SERVICE_UUID1;
 		gatt->chr_uuid[0].uuid = BLE_UUID_SEND1;
@@ -1124,47 +1459,11 @@ void *bt_test_init(void *arg)
 		gatt->chr_uuid[1].uuid = BLE_UUID_RECV1;
 		gatt->chr_uuid[1].chr_props = chr_props;
 		gatt->chr_cnt = 2;
+		*/
 
-		bt_content.ble_content.srv_cnt = 2;
+		bt_content.ble_content.srv_cnt = 1;
 
 		/* Fill adv data */
-		/*
-		BT 4.X
-		//LE Set Random Address Command
-		hcitool -i hci0 cmd 0x08 0x0005 41 C5 10 C3 9C 04
-
-		//LE SET PARAMETERS
-		hcitool -i hci0 cmd 0x08 0x0006 A0 00 A0 00 00 01 00 00 00 00 00 00 00 07 00
-
-		// LE Set Advertising Data Command
-		hcitool -i hci0 cmd 0x08 0x0008 1b 02 01 02 03 03 10 19 13 09 52 4f 43 4b 43 48 49 50 5f 41 55 44 49 4f 5f 42 4c 45
-
-		// LE Set Advertising Resp Data Command
-		hcitool -i hci0 cmd 0x08 0x0009 17 16 ff 46 00 02 1c 02 04 54 01 00 00 08 54 00 00 00 00 00 00 36 01 00
-
-		// LE Set Advertise Enable/Disable Command
-		hcitool -i hci0 cmd 0x08 0x000a 1
-
-		BT 5.X
-		#Command Code    LE Set Extended Advertising Disable Command
-		hcitool -i hci0 cmd 0x08 0x0039  00 01 01 00 00 00
-
-		#Command Code    LE Remove Advertising Set Command
-		hcitool -i hci0 cmd 0x08 0x003C 01
-
-		#Command Code    LE Set Extended Advertising Parameters Command
-		hcitool -i hci0 cmd 0x08 0x0036 01 13 00 A0 00 00 A0 00 00 07 01 00 00 00 00 00 00 00 00 7F 01 00 01 00 00
-
-		#Command Code    LE Set Advertising Set Random Address Command
-		hcitool -i hci0 cmd 0x08 0x0035 01 45 6E 87 2D 6A 44
-
-		#Command Code    LE Set Extended Advertising Data Command
-		hcitool -i hci0 cmd 0x08 0x0037 01 03 01 0D 03 03 0D 18 08 09 54 65 73 74 20 4C 46
-
-		#Command Code    LE Set Extended Advertising Enable Command
-		hcitool -i hci0 cmd 0x08 0x0039  01 01 01 00 00 00
-		 */
-
 		/* Appearance */
 		bt_content.ble_content.Appearance = 0x0080;
 
@@ -1198,33 +1497,56 @@ void *bt_test_init(void *arg)
 	bt_content.pairable = false;
 	bt_content.power = false;
 
+	//global init
+	ancs_is_support = false;
+	ancs_is_enable = false;
+
 	//bt config file
 	memset(&conf, 0, sizeof(struct bt_conf));
 	//both BR/EDR and LE enabled, "dual", "le" or "bredr"
 	conf.mode = "dual";
 	//0 = disable timer, i.e. stay discoverable forever
-	conf.discoverableTimeout = "0";
+	conf.discoverableTimeout = "1800";
 	//"audio-headset"
 	conf.Class = "0x240414";
 	//
 	conf.BleName = bt_content.ble_content.ble_name;
+
+	//custom pincode
+	conf.ssp = conf.SecureConnections = "on";
+	bt_content.pincode = "1234";
+
+	//gatt client (default true)
+	//conf.gatt_client = "false";
+
+	conf.gatt_client_cache = "no";
+
+	bt_content.cb_auth_func = auth_func;
+
 	create_bt_conf(&conf);
+	bt_init_static_var();
 
-	rk_bt_init(&bt_content);
+	rk_debug_init(true);
 
-	while (!bt_content.init)
-		sleep(1);
-	printf("bt init pass\n");
+	int max_retries = 3;
+	do {
+		if (!rk_bt_init(&bt_content))
+			break;
+	} while (--max_retries);
 
-	printf("ble adv start\n");
-	rk_ble_adv_start();
+	if (!bt_content.init) {
+		printf("bt_test_init failed!!!\n");
+		return -1;
+	}
 
-	//TEST ONLY
-	//初始化时间和计数器
-	//gettimeofday(&start, NULL);
-	//totalBytes = 0;
+	//printf("ble adv start\n");
+	//rk_ble_adv_start();
+	//sleep(1);
 
-	return NULL;
+	rk_bt_set_discoverable(true);
+	//rk_bt_set_profile(PROFILE_A2DP_SINK_HF, true);
+
+	return 0;
 }
 
 void bt_test_bluetooth_onoff_init(char *data)
@@ -1237,20 +1559,21 @@ void bt_test_bluetooth_onoff_init(char *data)
 
 	while (cnt < test_cnt) {
 		printf("BT TEST INIT START\n");
-		bt_test_init(NULL);
-		while (bt_content.init == false) {
-			sleep(1);
-			printf("BT TURNING ON ...\n");
-		}
+		if (bt_test_init(NULL))
+			goto failed;
 
 		//scan test
-		rk_bt_start_discovery(SCAN_TYPE_AUTO);
+		if (rk_bt_start_discovery(SCAN_TYPE_AUTO))
+			goto restart_bt;
 		while (bt_content.scanning == false) {
 			sleep(1);
 			printf("BT SCAN ON ...\n");
 		}
+
 		sleep(10);
-		rk_bt_cancel_discovery();
+
+		if (rk_bt_cancel_discovery())
+			goto restart_bt;
 		while (bt_content.scanning == true) {
 			sleep(1);
 			printf("BT SCAN OFF ...\n");
@@ -1269,13 +1592,19 @@ void bt_test_bluetooth_onoff_init(char *data)
 			printf("BT ADV OFF ...\n");
 		}
 
-		rk_bt_deinit();
-		while (bt_content.init == true) {
-			sleep(1);
-			printf("BT TURNING OFF ...\n");
-		}
-		printf("BT INIT/ADV/SCAN CNTs: [====== %d ======] \n", ++cnt);
+restart_bt:
+		if (rk_bt_deinit())
+			goto failed;
+
+		printf("[=================================\n");
+		printf("[ BT INIT/ADV/SCAN TEST CNT: %d ]\n", ++cnt);
+		printf("[=================================\n");
+		sleep(1);
 	}
+
+failed:
+	printf("BT TEST Failed\n");
+	return;
 }
 
 void bt_test_bluetooth_init(char *data)
@@ -1297,24 +1626,100 @@ void bt_test_get_adapter_info(char *data)
 	rk_bt_adapter_info(data);
 }
 
+/**
+ * bt_test_connect_by_addr - Connect to a BT device by address and address type
+ * @data: String containing the address and address type (optional)
+ *
+ * This function connects to a BT device by address and address type.
+ *
+ * The @data parameter is a string containing the address and address type
+ * (optional). The address must be a string representation of a BT address,
+ * and the address type must be "bredr" (BR/EDR), "le" (LE), or "auto" (auto
+ * detect). If the address type is not specified, it defaults to "bredr".
+ *
+ * Example usage:
+ *
+ * "bredr":  remote_address_type == "bredr"
+ * "public": remote_address_type == "public"
+ * "random": remote_address_type == "random"
+ * "auto"
+ *
+ * bt_test_connect_by_addr 00:11:22:33:44:55 bredr
+ * bt_test_connect_by_addr 00:11:22:33:44:55 public
+ * bt_test_connect_by_addr 00:11:22:33:44:55 random
+ * bt_test_connect_by_addr 00:11:22:33:44:55 auto
+ *
+ * Return: None
+ */
 void bt_test_connect_by_addr(char *data)
 {
-	rk_bt_connect_by_addr(data);
+	char *addr = NULL, *addr_type = NULL;
+
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
+
+	addr = strtok(data, " ");
+	if (addr)
+		addr_type = strtok(NULL, " ");
+
+	if (!addr_type)
+		addr_type = "bredr";
+
+	rk_bt_connect_by_addr(addr, addr_type);
+}
+
+void bt_test_connect_spp_by_addr(char *data)
+{
+	rk_bt_connect_spp_by_addr(data);
 }
 
 void bt_test_disconnect_by_addr(char *data)
 {
-	rk_bt_disconnect_by_addr(data);
+	char *addr = NULL, *addr_type = NULL;
+
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
+
+	addr = strtok(data, " ");
+	if (addr)
+		addr_type = strtok(NULL, " ");
+
+	if (!addr_type)
+		addr_type = "bredr";
+
+	rk_bt_disconnect_by_addr(data, addr_type);
 }
 
 void bt_test_pair_by_addr(char *data)
 {
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
 	rk_bt_pair_by_addr(data);
 }
 
 void bt_test_unpair_by_addr(char *data)
 {
-	rk_bt_unpair_by_addr(data);
+	char *addr = NULL, *addr_type = NULL;
+
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
+
+	addr = strtok(data, " ");
+	if (addr)
+		addr_type = strtok(NULL, " ");
+
+	if (!addr_type)
+		addr_type = "bredr";
+
+	rk_bt_unpair_by_addr(addr, addr_type);
 }
 
 void bt_test_start_discovery(char *data)
@@ -1359,6 +1764,10 @@ void bt_test_set_discoverable(char *data)
 		return;
 
 	rk_bt_set_discoverable(enable);
+	//system("hciconfig hci0 piscan");
+	//system("hciconfig -a");
+	//system("busybox ps");
+	//system("echo 3 > /proc/sys/vm/drop_caches && free");
 }
 
 void bt_test_set_pairable(char *data)
@@ -1376,6 +1785,14 @@ void bt_test_set_pairable(char *data)
 		return;
 
 	rk_bt_set_pairable(enable);
+}
+
+void bt_test_set_local_name(char *data)
+{
+	if (data == NULL)
+		return;
+
+	rk_bt_set_local_name(data);
 }
 
 void bt_test_set_power(char *data)
@@ -1406,19 +1823,13 @@ void bt_test_get_all_devices(char *data)
 		return;
 	}
 
-	printf("rdev: %p\n", rdev);
 	for (i = 0; i < count; i++) {
-		if (rdev[i].connected)
-			printf("Connected Device %s (%s:%s)\n",
-					rdev[i].remote_address,
-					rdev[i].remote_address_type,
-					rdev[i].remote_alias);
-		else
-			printf("%s Device %s (%s:%s)\n",
-				rdev[i].paired ? "Paired" : "Scaned",
-				rdev[i].remote_address,
-				rdev[i].remote_address_type,
-				rdev[i].remote_alias);
+		printf("Device BREDR|LE connected : %d|%d, paired %d|%d, %s|%s [%s]\n",
+			rdev[i].br_connected, rdev[i].ble_connected,
+			rdev[i].br_paired, rdev[i].ble_paired,
+			rdev[i].remote_address,
+			rdev[i].remote_address_type,
+			rdev[i].remote_alias);
 	}
 }
 
@@ -1492,6 +1903,11 @@ void bt_test_read_remote_device_info(char *data)
 	char *t_addr = data;
 	char *ios = "";
 
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
+
 	if (bt_get_dev_info(&rdev, t_addr) < 0)
 		return;
 
@@ -1524,6 +1940,10 @@ void bt_test_read_remote_device_info(char *data)
 /******************************************/
 void bt_test_sink_media_control(char *data)
 {
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
 	rk_bt_sink_media_control(data);
 }
 
@@ -1574,14 +1994,17 @@ void bt_test_enable_a2dp_sink(char *data)
 /******************************************/
 static void bt_test_ble_recv_data_callback(const char *uuid, char *data, int *len, RK_BLE_GATT_STATE state)
 {
+	rANCS_EVENT *p_event;
+
 	switch (state) {
 	//SERVER ROLE
 	case RK_BLE_GATT_SERVER_READ_BY_REMOTE:
 		//The remote dev reads characteristic and put data to *data.
 		printf("+++ ble server is read by remote uuid: %s\n", uuid);
-		*len = 247;//sstrlen("hello rockchip");
-		//memcpy(data, "hello rockchip", strlen("hello rockchip"));
-		memcpy(data, "hello rockchip 251", 247);
+		*len = strlen("hello rockchip");
+		if (*len > bt_content.ble_content.att_mtu)
+			*len = bt_content.ble_content.att_mtu;
+		memcpy(data, "hello rockchip", *len);
 		break;
 	case RK_BLE_GATT_SERVER_WRITE_BY_REMOTE:
 		//The remote dev writes data to characteristic so print there.
@@ -1599,7 +2022,7 @@ static void bt_test_ble_recv_data_callback(const char *uuid, char *data, int *le
 				uuid);
 		break;
 	case RK_BLE_GATT_MTU:
-		//
+		//Obsolete
 		printf("+++ ble server MTU: %d ===\n", *(uint16_t *)data);
 		break;
 	case RK_BLE_GATT_SERVER_INDICATE_RESP_BY_REMOTE:
@@ -1640,6 +2063,15 @@ static void bt_test_ble_recv_data_callback(const char *uuid, char *data, int *le
 				uuid,
 				(state == RK_BLE_GATT_CLIENT_NOTIFY_ENABLE) ? "enable" : "disabled"
 				);
+		break;
+	case RK_BLE_GATT_CLIENT_ANCS:
+		p_event = (rANCS_EVENT *)data;
+		printf("ANCS notification NEW [%s] %s %s %s %s\n\n", \
+				p_event->appid, \
+				p_event->title, \
+				p_event->message, \
+				p_event->positive_action_label, \
+				p_event->negative_action_label);
 		break;
 	case RK_BLE_GATT_CLIENT_NOTIFY_ERR:
 		printf("RK_BLE_GATT_CLIENT_NOTIFY_ERR\n");
@@ -1690,23 +2122,24 @@ void bt_test_ble_set_adv_interval(char *data)
 
 void bt_test_ble_write(char *data)
 {
-	rk_ble_send_notify("dfd4416e-1810-47f7-8248-eb8be3dc47f9", data, 4);
+	int len;
+
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
+
+	len = strlen(data) > bt_content.ble_content.att_mtu ?
+			bt_content.ble_content.att_mtu :
+			strlen(data);
+
+	rk_ble_send_notify(BLE_UUID_SEND, data, len);
 }
 
 //ONLY FOR V1.6.1
 void bt_test_ble_service_changed(char *data)
 {
-	char value[4];
-	value[0] = 0x01;
-	value[1] = 0x00;
-	value[2] = 0xFF;
-	value[3] = 0xFF;
-	rk_ble_send_notify("dfd4416e-1810-47f7-8248-eb8be3dc47f9", value, 4);
-}
-
-void bt_test_ble_get_status(char *data)
-{
-
+	rk_ble_service_changed();
 }
 
 void bt_test_ble_stop(char *data) 
@@ -1763,9 +2196,19 @@ void bt_test_ble_client_read(char *data)
 
 void bt_test_ble_client_write(char *data)
 {
-	char *write_buf = "hello world";
+	int len;
+	char *test_data = "helle ble client";
 
-	rk_ble_client_write(data, write_buf, strlen("hello world"));
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
+
+	len = strlen(test_data) > bt_content.ble_content.att_mtu ?
+			bt_content.ble_content.att_mtu :
+			strlen(test_data);
+
+	rk_ble_client_write(data, test_data, len);
 }
 
 void bt_test_ble_client_is_notify(char *data)
@@ -1790,6 +2233,9 @@ void bt_test_ble_client_enable_ancs(char *data)
 {
 	bool enable;
 
+	if (!ancs_is_support)
+		return;
+
 	if (data == NULL) {
 		printf("Invaild param! (xx input on/off)\n");
 		return;
@@ -1802,95 +2248,9 @@ void bt_test_ble_client_enable_ancs(char *data)
 	else
 		return;
 
+	ancs_is_enable = enable;
+
 	rk_ble_client_ancs(enable);
-}
-
-/******************************************/
-/*                  SPP                   */
-/******************************************/
-void _btspp_status_callback(RK_BT_SPP_STATE type)
-{
-	switch(type) {
-	case RK_BT_SPP_STATE_IDLE:
-		printf("+++++++ RK_BT_SPP_STATE_IDLE +++++\n");
-		break;
-	case RK_BT_SPP_STATE_CONNECT:
-		printf("+++++++ RK_BT_SPP_EVENT_CONNECT +++++\n");
-		break;
-	case RK_BT_SPP_STATE_DISCONNECT:
-		printf("+++++++ RK_BT_SPP_EVENT_DISCONNECT +++++\n");
-		break;
-	default:
-		printf("+++++++ BT SPP NOT SUPPORT TYPE! +++++\n");
-		break;
-	}
-}
-
-void _btspp_recv_callback(char *data, int len)
-{
-	if (len) {
-		printf("+++++++ RK BT SPP RECV DATA: +++++\n");
-		printf("\tRECVED(%d):%s\n", len, data);
-	}
-}
-
-void bt_test_spp_open(char *data)
-{
-	rk_bt_spp_open(data);
-	rk_bt_spp_register_status_cb(_btspp_status_callback);
-	rk_bt_spp_register_recv_cb(_btspp_recv_callback);
-}
-
-void bt_test_spp_write(char *data)
-{
-	unsigned int ret = 0;
-	//char buff[100] = {"This is a message from rockchip board!"};
-
-	ret = rk_bt_spp_write(data, strlen(data));
-	if (ret < 0) {
-		printf("%s failed\n", __func__);
-	}
-}
-
-void bt_test_spp_connect(char *data)
-{
-	rk_bt_spp_connect(data);
-}
-
-void bt_test_spp_disconnect(char *data)
-{
-	rk_bt_spp_disconnect(data);
-}
-
-void bt_test_spp_listen(char *data)
-{
-	rk_bt_spp_listen();
-}
-
-void bt_test_spp_close(char *data)
-{
-	rk_bt_spp_close();
-}
-
-void bt_test_spp_status(char *data)
-{
-	RK_BT_SPP_STATE status;
-
-	rk_bt_spp_get_state(&status);
-	switch(status) {
-	case RK_BT_SPP_STATE_IDLE:
-		printf("+++++++ RK_BT_SPP_STATE_IDLE +++++\n");
-		break;
-	case RK_BT_SPP_STATE_CONNECT:
-		printf("+++++++ RK_BT_SPP_STATE_CONNECT +++++\n");
-		break;
-	case RK_BT_SPP_STATE_DISCONNECT:
-		printf("+++++++ RK_BT_SPP_STATE_DISCONNECT +++++\n");
-		break;
-	default:
-		printf("+++++++ BTSPP NO STATUS SUPPORT! +++++\n");
-		break;
-	}
 }
 
 /**
@@ -2075,31 +2435,193 @@ void bt_test_pbap_get_vcf(char *data)
 
 void bt_test_opp_send(char *data)
 {
-	char *addr, *send_file;
+	char *addr, *send_file = "";
 
-	if (data == NULL) {
+	if (data != NULL) {
 		addr = strtok(data, " ");
 		if (addr)
 			send_file = strtok(NULL, " ");
-	} else {
-		addr = bt_content.connected_a2dp_addr;
-	}
+	} else
+		return;
 
 	printf("addr: %s, send_file: %s\n", addr, send_file);
 
 	rk_bt_opp_send(addr, send_file);
 }
 
-/* at evt callback
- * 
+/* 
+ * HFP
+
+First, in the initialization procedure, the HF shall send the AT+BRSF=<HF supported features> command
+to the AG to both notify the AG of the supported features in the HF, as well as to retrieve the supported
+features in the AG using the +BRSF result code.
+
+AT String
+	//bluez-alsa send HF role supported features (bluez-alsa 发送HF角色支持的特性)
+	Command									AT+BRSF=
+	HF Supported Features					756
+		EC And/Or NR Function				No
+		Three-Way Calling					No
+		CLI Presentation Capability			Yes
+		Voice Recognition Activation		No
+		Remote Volume Control				Yes
+		Enhanced Call Status				Yes
+		Enhanced Call Control				Yes
+		Codec Negotiation					Yes
+		HF Indicators						No
+		eSCO S4 Settings Supported 			Yes
+		Enhanced Voice Recognition Status	No
+		Voice Recognition Text 				No
+
+iPhone
+AT String
+	Response                                      +BRSF:
+	AG Supported Features                         4079
+		EC And/Or NR Function                       Yes
+		Three-Way Calling                           Yes
+		Voice Recognition Function                  Yes
+		In-Band Ring Tone Capability                Yes
+		Attach A Phone Number To A Voice Tag        No
+		Ability To Reject A Call                    Yes
+		Enhanced Call Status                        Yes
+		Enhanced Call Control                       Yes
+		Extended Error Results                      Yes
+		Codec Negotiation                           Yes
+		HF Indicators                               Yes
+		eSCO S4 Settings Supported                  Yes
+		Enhanced Voice Recognition Status           No
+		Voice Recognition Text                      No
+
+Android
+AT String
+	Response                                      +BRSF:
+	AG Supported Features                         3943
+		EC And/Or NR Function                       Yes
+		Three-Way Calling                           Yes
+		Voice Recognition Function                  Yes
+		In-Band Ring Tone Capability                No
+		Attach A Phone Number To A Voice Tag        No
+		Ability To Reject A Call                    Yes
+		Enhanced Call Status                        Yes
+		Enhanced Call Control                       No
+		Extended Error Results                      Yes
+		Codec Negotiation                           Yes
+		HF Indicators                               Yes
+		eSCO S4 Settings Supported                  Yes
+		Enhanced Voice Recognition Status           No
+		Voice Recognition Text                      No
+
+Secondly, in the initialization procedure, if the HF supports the Codec Negotiation feature, it shall check if
+the AT+BRSF command response from the AG has indicated that it supports the Codec Negotiation
+feature. If both the HF and AG do support the Codec Negotiation feature then the HF shall send the
+AT+BAC=<HF available codecs> command to the AG to notify the AG of the available codecs in the HF.2
+
+AT String
+	Command	AT+BAC=
+	Codec (1)	CVSD
+	Codec (2)	mSBC
+
+After having retrieved the supported features in the AG, the HF shall determine which indicators are
+supported by the AG, as well as the ordering of the supported indicators. The HF uses
+the AT+CIND=? Test command to retrieve information about the supported indicators and their ordering
+
+AT String
+	Command
+	Test	AT+CIND=?
+iPhone
+AT String
+	Response                                                       +CIND:
+	Mobile Termination Indicators                                  ("service",(0-1)),("call",(0-1)),("callsetup",(0-3)),("battchg",(0-5)),("signal",(0-5)),("roam",(0-1)),("callheld",(0-2))
+		Indicator (0)
+		  Description                                                Service Availability
+		  No Home/Roam network available                             0
+		  Home/Roam network available                                1
+		Indicator (1)
+		  Description                                                Call In Progress
+		  No call active                                             0
+		  A call is active                                           1
+		Indicator (2)
+		  Description                                                Call Setup
+		  Not currently in call set up                               0
+		  An incoming call process ongoing                           1
+		  An outgoing call set up is ongoing                         2
+		  Remote party being alerted in an outgoing call             3
+		Indicator (3)
+		  Description                                                Battery Charge Level
+		  Allowed Range (1)                                          0-5
+		Indicator (4)
+		  Description                                                Signal Quality
+		  Allowed Range (1)                                          0-5
+		Indicator (5)
+		  Description                                                Roaming
+		  Roaming is not active                                      0
+		  A roaming is active                                        1
+		Indicator (6)
+		  Description                                                Call Held
+		  No calls held                                              0
+		  Call is placed on hold or active/held calls swapped        1
+		  Call on hold, no active call                               2
+
+Android
+AT String
+	Response                      +CIND:
+	Mobile Termination Indicators ("call",(0,1)),("callsetup",(0-3)),("service",(0-1)),("signal",(0-5)),("roam",(0,1)),("battchg",(0-5)),("callheld",(0-2))
+		Indicator (0)
+		  Description              Call In Progress
+		Indicator (1)
+		  Description              Call Setup
+		Indicator (2)
+		  Description              Service Availability
+		Indicator (3)
+		  Description              Signal Quality
+		Indicator (4)
+		  Description              Roaming
+		Indicator (5)
+		  Description              Battery Charge Level
+		Indicator (6)
+		  Description              Call Held
+Windows
+AT String
+	Response 													  +CIND:
+	Mobile Termination Indicators								  ("service",(0,1)),("call",(0,1)),("callsetup",(0-3)),("callheld",(0-2)),("signal",(0-5)),("roam",(0,1)),("battchg",(0-5))
+		Indicator (0)
+		   Description												  Service Availability
+		Indicator (1)
+		   Description												  Call In Progress
+		Indicator (2)
+		   Description												  Call Setup
+		Indicator (3)
+		   Description												  Call Held
+		Indicator (4)
+		   Description												  Signal Quality
+		Indicator (5)
+		   Description												  Roaming
+		Indicator (6)
+		   Description												  Battery Charge Level
+ */
+
+
+/* AT evt callback
+ *
+ * The iPhone/android/Windows OS Indicator order is different
  * +CIEV: <event>,<value>
  *																	 iPhone			Android
  * no_calls_active; 		//No calls (held or active)				 +CIEV: 2,0		+CIEV: 1,0
  * call_present_active; 	//Call is present (active or held)		 +CIEV: 2,1		+CIEV: 1,1
- * no_call_progress; 		//No call setup in progress				 +CIEV: 3,0		+CIEV: 2,0
- * incoming_call_progress; 	//Incoming call setup in progress		 +CIEV: 3,1		+CIEV: 2,1
- * outgoing_call_dialing; 	//Outgoing call setup in dialing state	 +CIEV: 3,2		+CIEV: 2,2
- * outgoing_call_alerting; 	//Outgoing call setup in alerting state	 +CIEV: 3,3		+CIEV: 2,3
+ *
+ *
+  Indicator (2)
+   Description												  Call Setup
+   Not currently in call set up 							  0
+   An incoming call process ongoing 						  1
+   An outgoing call set up is ongoing						  2
+   Remote party being alerted in an outgoing call			  3
+
+   iPhone			Android
+   +CIEV: 3,0		+CIEV: 2,0
+   +CIEV: 3,1		+CIEV: 2,1
+   +CIEV: 3,2		+CIEV: 2,2
+   +CIEV: 3,3		+CIEV: 2,3
  */
 void at_evt_callback(char *at_evt)
 {
@@ -2107,37 +2629,21 @@ void at_evt_callback(char *at_evt)
 		printf("[AT EVT]: %s\n", at_evt);
 }
 
-void bt_test_rfcomm_open(char *data)
-{
-	char *addr;
-
-	if (data == NULL)
-		addr = bt_content.connected_a2dp_addr;
-	else
-		addr = data;
-
-	rk_bt_rfcomm_open(addr, at_evt_callback);
-}
-
-void bt_test_rfcomm_close(char *data)
-{
-	rk_bt_rfcomm_close();
-}
-
 /* 
  * AT CMD:
- * pickup: ATA
- * hangup: AT+CHUP
- * redial: AT+BLDN
- * dial_num: ATD18812345678;  //注意: 拨号要在最后加分号“;”
- * volume: AT+VGS=[0-6]
+ * pickup    接听: ATA
+ * hangup    挂断: AT+CHUP
+ * redial    重拨: AT+BLDN
+ * dial  拨打号码: ATD18812345678;  //注意: 拨号要在最后加分号“;”
+ * volume    音量: AT+VGS=[0-6]
+ * Phone 来电显示: AT+CLIP=1 //at_evt: +CLIP: "059183991906",129,,," (0591) 8399 1906 "
  */
 void bt_test_rfcomm_send(char *data)
 {
-	printf("data: %p\n", data);
-
-	if (data == NULL)
+	if (data == NULL) {
+		printf("Invaild param!\n");
 		return;
+	}
 
 	printf("data: %s\n", data);
 
@@ -2147,7 +2653,12 @@ void bt_test_rfcomm_send(char *data)
 void bt_test_adapter_connect(char *data)
 {
 	char *addr;
-	char *ble_addr_type;
+	char *ble_addr_type = "";
+
+	if (data == NULL) {
+		printf("Invaild param!\n");
+		return;
+	}
 
 	printf("data: %s\n", data);
 

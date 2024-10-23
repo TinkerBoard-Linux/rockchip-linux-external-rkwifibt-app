@@ -34,10 +34,11 @@ typedef enum {
 } RK_WIFI_RUNNING_State_e;
 
 typedef enum {
-	NONE = 0,
-	WPA,
-	WEP,
-	WPA3
+	NONE = 0,	//open system
+	WPA,		//TKIP and AES
+	WEP,		//WEPXX with shared key mode
+	WPA3,		//WPA3-SAE Mode (MFPC=1, MFPR=1)
+	WPA2_WPA3	//WPA3-SAE Transition Mode (MFPC=1, MFPR=0)
 } RK_WIFI_KEY_MGMT;
 
 typedef struct {

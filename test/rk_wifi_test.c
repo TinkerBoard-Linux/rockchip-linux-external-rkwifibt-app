@@ -10,6 +10,7 @@
 #include <stdatomic.h>
 //#include <check.h>
 
+#include "utility.h"
 #include "Rk_wifi.h"
 #include "Rk_softap.h"
 
@@ -29,15 +30,15 @@ static void printf_connect_info(RK_WIFI_INFO_Connection_s *info)
 	if (!info)
 		return;
 
-	printf("	id: %d\n", info->id);
-	printf("	bssid: %s\n", info->bssid);
-	printf("	ssid: %s\n", info->ssid);
-	printf("	freq: %d\n", info->freq);
-	printf("	mode: %s\n", info->mode);
-	printf("	wpa_state: %s\n", info->wpa_state);
-	printf("	ip_address: %s\n", info->ip_address);
+	printf("	id:          %d\n", info->id);
+	printf("	bssid:       %s\n", info->bssid);
+	printf("	ssid:        %s\n", info->ssid);
+	printf("	freq:        %d\n", info->freq);
+	printf("	mode:        %s\n", info->mode);
+	printf("	wpa_state:   %s\n", info->wpa_state);
+	printf("	ip_address:  %s\n", info->ip_address);
 	printf("	mac_address: %s\n", info->mac_address);
-	printf("	key_mgmt: %s\n", info->key_mgmt);
+	printf("	key_mgmt:    %s\n", info->key_mgmt);
 }
 
 static void *__rk_wifi_state_callback(void *data);
@@ -149,6 +150,8 @@ void rk_wifi_open(char *data)
 		exec_command_system("cp /etc/wpa_supplicant.conf /data/cfg/wpa_supplicant.conf");
 	}
 
+	rk_debug_init(true);
+	RK_wifi_set_dhcp_server(DHCP_DHCPCD);
 	RK_wifi_register_callback(rk_wifi_state_callback);
 	if (RK_wifi_enable(1, "/data/cfg/wpa_supplicant.conf") < 0)
 		printf("RK_wifi_enable 1 fail!\n");
@@ -169,7 +172,7 @@ void rk_wifi_connect(char *data)
 	RK_WIFI_KEY_MGMT mgmt = WPA;
 
 	if (data == NULL) {
-		printf("%s: invalid input\n", __func__);
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
 		return;
 	}
 
@@ -181,15 +184,22 @@ void rk_wifi_connect(char *data)
 	if (key_mgmt)
 		bssid = strtok(NULL, " ");
 
-	if (!strcmp(key_mgmt, "NONE")) {
+	if (!key_mgmt){
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
+		return;
+	}
+
+	if (!strcasecmp(key_mgmt, "NONE")) {
 		mgmt = NONE;
 		psk = NULL;
-	} else if (!strcmp(key_mgmt, "WEP"))
+	} else if (!strcasecmp(key_mgmt, "WEP"))
 		mgmt = WEP;
-	else if (!strcmp(key_mgmt, "WPA3"))
+	else if (!strcasecmp(key_mgmt, "WPA3"))
 		mgmt = WPA3;
-	else if (!strcmp(key_mgmt, "WPA"))
+	else if (!strcasecmp(key_mgmt, "WPA"))
 		mgmt = WPA;
+	else if (!strcasecmp(key_mgmt, "WPA23"))
+		mgmt = WPA2_WPA3;
 
 	printf("%s: ssid: %s psk: %s key:%s:%d bssid:%s\n", __func__, ssid, psk, key_mgmt, mgmt, bssid);
 
@@ -238,11 +248,11 @@ void rk_wifi_getConnectionInfo(char *data)
 
 void rk_wifi_connect_with_ssid(char *data)
 {
-	char *ssid, *key_mgmt;
+	char *ssid, *key_mgmt = "";
 	RK_WIFI_KEY_MGMT mgmt = WPA;
 
 	if (data == NULL) {
-		printf("%s: ssid is null\n", __func__);
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
 		return;
 	}
 
@@ -250,14 +260,22 @@ void rk_wifi_connect_with_ssid(char *data)
 	if (ssid)
 		key_mgmt = strtok(NULL, " ");
 
-	if (!strcmp(key_mgmt, "NONE")) {
+	if (key_mgmt == NULL)
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
+
+	if (!strcasecmp(key_mgmt, "NONE")) {
 		mgmt = NONE;
-	} else if (!strcmp(key_mgmt, "WEP"))
+	} else if (!strcasecmp(key_mgmt, "WEP"))
 		mgmt = WEP;
-	else if (!strcmp(key_mgmt, "WPA3"))
+	else if (!strcasecmp(key_mgmt, "WPA3"))
 		mgmt = WPA3;
-	else if (!strcmp(key_mgmt, "WPA"))
+	else if (!strcasecmp(key_mgmt, "WPA"))
 		mgmt = WPA;
+	else if (!strcasecmp(key_mgmt, "WPA23"))
+		mgmt = WPA2_WPA3;
+
+	if (key_mgmt == NULL)
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
 
 	if (RK_wifi_connect_with_ssid(data, mgmt) < 0)
 		printf("RK_wifi_connect_with_ssid fail!\n");
@@ -271,26 +289,30 @@ void rk_wifi_cancel(void *data)
 
 void rk_wifi_forget_with_ssid(char *data)
 {
-	char *ssid, *key_mgmt;
+	char *ssid, *key_mgmt = "";
 	RK_WIFI_KEY_MGMT mgmt = WPA;
 
 	if (data == NULL) {
-		printf("%s: ssid is null\n", __func__);
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
 		return;
 	}
 
 	ssid = strtok(data, " ");
 	if (ssid)
 		key_mgmt = strtok(NULL, " ");
+	if (key_mgmt == NULL)
+		printf("%s: invalid input example: ssid psk WPA/WEP/WPA3/NONE]\n", __func__);
 
-	if (!strcmp(key_mgmt, "NONE")) {
+	if (!strcasecmp(key_mgmt, "NONE")) {
 		mgmt = NONE;
-	} else if (!strcmp(key_mgmt, "WEP"))
+	} else if (!strcasecmp(key_mgmt, "WEP"))
 		mgmt = WEP;
-	else if (!strcmp(key_mgmt, "WPA3"))
+	else if (!strcasecmp(key_mgmt, "WPA3"))
 		mgmt = WPA3;
-	else if (!strcmp(key_mgmt, "WPA"))
+	else if (!strcasecmp(key_mgmt, "WPA"))
 		mgmt = WPA;
+	else if (!strcasecmp(key_mgmt, "WPA23"))
+		mgmt = WPA2_WPA3;
 
 	if (RK_wifi_forget_with_ssid(data, mgmt) < 0) {
 		printf("rk_wifi_forget_with_ssid fail!\n");
@@ -313,7 +335,7 @@ void rk_wifi_disconnect(char *data)
  */
 void rk_wifi_onoff_test(char *data)
 {
-	int test_cnt = 5000; /* Default test times */
+	int test_cnt = 0x7FFFFFFF; /* Default test times */
 
 	pthread_mutex_init(&wifi_status.wifi_mutex, NULL);
 	pthread_cond_init(&wifi_status.cond, NULL);

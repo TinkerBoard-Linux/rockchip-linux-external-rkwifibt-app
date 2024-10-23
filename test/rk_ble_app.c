@@ -14,6 +14,7 @@
 #include <Rk_wifi.h>
 #include "rk_ble_app.h"
 #include "utility.h"
+#include "bt_test.h"
 
 /* Immediate wifi Service UUID */
 #define AD_SERVICE_UUID16	"2222"
@@ -87,7 +88,7 @@ void *rk_config_wifi_thread(void *arg)
 
 	prctl(PR_SET_NAME,"rk_config_wifi_thread");
 
-	RK_wifi_connect(wifi_ssid, wifi_password, WPA, NULL);
+	RK_wifi_connect(wifi_ssid, wifi_password, WPA3, NULL);
 
 	return NULL;
 }
@@ -213,165 +214,10 @@ static void bt_test_ble_recv_data_callback(const char *uuid, char *data, int *le
 	}
 }
 
-static void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state)
-{
-	switch (state) {
-	//BASE STATE
-	case RK_BT_STATE_TURNING_ON:
-		printf("++ RK_BT_STATE_TURNING_ON\n");
-		break;
-	case RK_BT_STATE_INIT_ON:
-		printf("++ RK_BT_STATE_INIT_ON\n");
-		bt_content.init = true;
-		break;
-	case RK_BT_STATE_INIT_OFF:
-		printf("++ RK_BT_STATE_INIT_OFF\n");
-		bt_content.init = false;
-		break;
-
-	//LINK STATE
-	case RK_BT_STATE_CONNECTED:
-	case RK_BT_STATE_DISCONN:
-		printf("+ %s [%s|%d]:%s:%s\n", rdev->connected ? "STATE_CONNECT" : "STATE_DISCONN",
-				rdev->remote_address,
-				rdev->rssi,
-				rdev->remote_address_type,
-				rdev->remote_alias);
-		break;
-
-	//ADV
-	case RK_BT_STATE_ADAPTER_BLE_ADV_START:
-		printf("RK_BT_STATE_ADAPTER_BLE_ADV_START successful\n");
-		break;
-	case RK_BT_STATE_ADAPTER_BLE_ADV_STOP:
-		printf("RK_BT_STATE_ADAPTER_BLE_ADV_STOP successful\n");
-		break;
-
-	//ADAPTER STATE
-	case RK_BT_STATE_ADAPTER_POWER_ON:
-		bt_content.power = true;
-		printf("RK_BT_STATE_ADAPTER_POWER_ON successful\n");
-		break;
-	case RK_BT_STATE_ADAPTER_POWER_OFF:
-		bt_content.power = false;
-		printf("RK_BT_STATE_ADAPTER_POWER_OFF successful\n");
-		break;
-	case RK_BT_STATE_COMMAND_RESP_ERR:
-		printf("RK_BT_STATE CMD ERR!!!\n");
-		break;
-	case RK_BT_STATE_SCAN_CHG_REMOTE_DEV:
-		printf("+ %s: [%s|%d]:%s:%s|%s\n", rdev->connected ? "CONN_CHG_DEV" : "SCAN_CHG_DEV",
-				rdev->remote_address, rdev->rssi,
-				rdev->remote_address_type, 
-				rdev->remote_alias, rdev->change_name);
-
-		if (!strcmp(rdev->change_name, "UUIDs")) {
-			for (int index = 0; index < 36; index++) {
-				if (!strcmp(rdev->remote_uuids[index], "NULL"))
-					break;
-				printf("\tUUIDs: %s\n", rdev->remote_uuids[index]);
-			}
-		} else if (!strcmp(rdev->change_name, "Icon")) {
-			printf("\tIcon: %s\n", rdev->icon);
-		} else if (!strcmp(rdev->change_name, "Class")) {
-			printf("\tClass: 0x%x\n", rdev->cod);
-		} else if (!strcmp(rdev->change_name, "Modalias")) {
-			printf("\tModalias: %s\n", rdev->modalias);
-		}
-		break;
-	default:
-		if (rdev != NULL)
-			printf("+ DEFAULT STATE %d: %s:%s:%s RSSI: %d [CBP: %d:%d:%d]\n", state,
-				rdev->remote_address,
-				rdev->remote_address_type,
-				rdev->remote_alias,
-				rdev->rssi,
-				rdev->connected,
-				rdev->paired,
-				rdev->bonded);
-		break;
-	}
-}
-
-static bool ble_test_vendor_cb(bool enable)
-{
-	int times = 100;
-
-	if (enable) {
-		//vendor
-		//broadcom
-		if (get_ps_pid("brcm_patchram_plus1"))
-			kill_task("brcm_patchram_plus1");
-
-		//realtek
-		if (get_ps_pid("rtk_hciattach"))
-			kill_task("rtk_hciattach");
-
-		//The hci0 start to init ...
-		if (!access("/usr/bin/wifibt-init.sh", F_OK))
-			exec_command_system("/usr/bin/wifibt-init.sh start_bt");
-		else if (!access("/usr/bin/bt_init.sh", F_OK))
-			exec_command_system("/usr/bin/bt_init.sh");
-
-		//wait hci0 appear
-		while (times-- > 0 && access("/sys/class/bluetooth/hci0", F_OK)) {
-			usleep(100 * 1000);
-		}
-
-		if (access("/sys/class/bluetooth/hci0", F_OK) != 0) {
-			printf("The hci0 init failure!\n");
-			return false;
-		}
-
-		/* ensure bluetoothd running */
-		/*
-		 * DEBUG: vim /etc/init.d/S40bluetooth, modify BLUETOOTHD_ARGS="-n -d"
-		 */
-		if (access("/etc/init.d/S40bluetooth", F_OK) == 0)
-			exec_command_system("/etc/init.d/S40bluetooth restart");
-		else if (access("/etc/init.d/S40bluetoothd", F_OK) == 0)
-			exec_command_system("/etc/init.d/S40bluetoothd restart");
-
-		//or
-		//exec_command_system("/usr/libexec/bluetoothd -n -P battery");
-		//or debug
-		//exec_command_system("/usr/libexec/bluetoothd -n -P battery -d");
-		//exec_command_system("hcidump xxx or btmon xxx");
-
-		//check bluetoothd
-		times = 100;
-		while (times-- > 0 && !(get_ps_pid("bluetoothd"))) {
-			usleep(100 * 1000);
-		}
-
-		if (!get_ps_pid("bluetoothd")) {
-			printf("The bluetoothd boot failure!\n");
-			return false;
-		}
-	} else {
-		//CLEAN
-		exec_command_system("hciconfig hci0 down");
-		exec_command_system("/etc/init.d/S40bluetooth stop");
-
-		//vendor deinit
-		if (get_ps_pid("brcm_patchram_plus1"))
-			kill_task("killall brcm_patchram_plus1");
-		if (get_ps_pid("rtk_hciattach"))
-			kill_task("killall rtk_hciattach");
-
-		//audio server deinit
-		if (get_ps_pid("bluealsa"))
-			kill_task("bluealsa");
-		if (get_ps_pid("bluealsa-alay"))
-			kill_task("bluealsa-alay");
-	}
-
-	return true;
-}
-
 void rk_ble_wifi_init(char *data)
 {
 	RkBleGattService *gs;
+	struct bt_conf conf;
 	static char *chr_props[] = { "read", "write", "indicate", "write-without-response", NULL };
 
 	printf(" %s \n", __func__);
@@ -379,10 +225,30 @@ void rk_ble_wifi_init(char *data)
 	memset(&bt_content, 0, sizeof(RkBtContent));
 
 	//BREDR CLASS BT NAME
-	bt_content.bt_name = "Rockchip_bt";
+	memset(bt_content.bt_name, 0, sizeof(bt_content.bt_name));
+	strcpy(bt_content.bt_name, "rkbt");
 
 	//BLE NAME
-	bt_content.ble_content.ble_name = "RBLE";
+	memset(bt_content.ble_content.ble_name, 0, sizeof(bt_content.ble_content.ble_name));
+	strcpy(bt_content.ble_content.ble_name, "rkble");
+
+	//1234
+	FILE *fp;
+    fp = fopen("/data/bt_id.txt", "r");
+    if (fp) {
+		char bt_id[6];
+        fscanf(fp, "%s", bt_id); // Read the MAC address
+        fclose(fp);
+
+		char buf[38];
+        memset(buf, 0, sizeof(buf));
+        snprintf(buf, sizeof(buf), "%s_%s", bt_content.bt_name, bt_id);
+		memcpy(bt_content.bt_name, buf, sizeof(bt_content.bt_name));
+
+		memset(buf, 0, sizeof(buf));
+        snprintf(buf, sizeof(buf), "%s_%s", bt_content.ble_content.ble_name, bt_id);
+		memcpy(bt_content.ble_content.ble_name, buf, sizeof(bt_content.ble_content.ble_name));
+    }
 
 	//IO CAPABILITY
 	bt_content.io_capability = IO_CAPABILITY_DISPLAYYESNO;
@@ -417,18 +283,31 @@ void rk_ble_wifi_init(char *data)
 	}
 
 	rk_bt_register_state_callback(bt_test_state_cb);
-	rk_bt_register_vendor_callback(ble_test_vendor_cb);
+	rk_bt_register_vendor_callback(bt_test_vendor_cb);
 
 	//default state
 	bt_content.init = false;
+	bt_content.connecting = false;
+	bt_content.scanning = false;
+	bt_content.discoverable = false;
+	bt_content.pairable = false;
+	bt_content.power = false;
+
+	//global init
+	//ancs_is_support = false;
+	//ancs_is_enable = false;
+
+	//bt config file
+	memset(&conf, 0, sizeof(struct bt_conf));
+	//both BR/EDR and LE enabled, "dual", "le" or "bredr"
+	conf.mode = "le";
+	conf.BleName = bt_content.ble_content.ble_name;
+	conf.gatt_client_cache = "no";
+	create_bt_conf(&conf);
+
+	rk_debug_init(true);
 
 	rk_bt_init(&bt_content);
-
-	//wait init ok
-	while (!bt_content.init)
-		sleep(1);
-
-	//rk_bt_set_power(1);
 
 	//enable adv
 	printf("Start BLE ADV ....\n");
@@ -452,13 +331,7 @@ void rk_ble_wifi_deinit(char *data)
 	//disable adv
 	rk_ble_adv_stop();
 
-	//sleep(1);
-	//deinit bt
 	rk_bt_deinit();
-
-	//wait deinit end
-	while (bt_content.init)
-		sleep(1);
 
 	printf(" %s end\n", __func__);
 }

@@ -4,6 +4,9 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+#include <RkBtBase.h>
+
+void bt_test_connect_spp_by_addr(char *data);
 
 /******************************************/
 /*        BT base server init             */
@@ -19,6 +22,7 @@ void bt_test_set_pairable(char *data);
 void bt_test_get_all_devices(char *data);
 void bt_test_sink_media_control(char *data);
 void bt_test_a2dp_test_volume(char *data);
+void bt_test_set_local_name(char *data);
 
 void bt_test_connect_by_addr(char *data);
 void bt_test_disconnect_by_addr(char *data);
@@ -41,7 +45,7 @@ void bt_test_ble_start(char *data);
 void bt_test_ble_write(char *data);
 void bt_test_ble_set_address(char *data);
 void bt_test_ble_set_adv_interval(char *data);
-void bt_test_ble_get_status(char *data);
+void bt_test_ble_service_changed(char *data);
 void bt_test_ble_stop(char *data);
 
 /******************************************/
@@ -61,18 +65,6 @@ void bt_test_ble_client_enable_ancs(char *data);
 void bt_test_sink_get_play_status(char *data);
 void bt_test_sink_get_poschange(char *data);
 
-/******************************************/
-/*              SPP Test                  */
-/******************************************/
-void bt_test_spp_open(char *data);
-void bt_test_spp_write(char *data);
-void bt_test_spp_close(char *data);
-void bt_test_spp_status(char *data);
-void bt_test_spp_connect(char *data);
-void bt_test_spp_disconnect(char *data);
-void bt_test_spp_listen(char *data);
-void bt_test_start_discovery_spp(char *data);
-
 //pbap
 void bt_test_pbap_get_vcf(char *data);
 
@@ -84,6 +76,10 @@ void bt_test_rfcomm_close(char *data);
 void bt_test_rfcomm_send(char *data);
 
 void bt_test_adapter_connect(char *data);
+
+void bt_test_state_cb(RkBtRemoteDev *rdev, RK_BT_STATE state);
+bool bt_test_vendor_cb(bool enable);
+int create_bt_conf(struct bt_conf *conf);
 
 #ifdef __cplusplus
 }

@@ -28,15 +28,11 @@
 #include <signal.h>
 
 #include "bt_test.h"
-#include "rk_ble_app.h"
-#include "rk_wifi_test.h"
 #include "utility.h"
 
 static bool main_loop_flag;
 
 static void rkwifibt_test_bluetooth();
-static void rkwifibt_test_wifi_config();
-static void rkwifibt_test_network_config();
 
 typedef struct {
 	const char *cmd;
@@ -46,42 +42,14 @@ typedef struct {
 
 static menu_command_t menu_command_table[] = {
 	{"BT", "show bluetooth test cmd menu", rkwifibt_test_bluetooth},
-	{"WiFi", "show wifi config test cmd menu", rkwifibt_test_wifi_config},
-	{"Network", "show ble wifi config test cmd menu", rkwifibt_test_network_config},
 };
 
 static void show_bt_cmd();
-static void show_wifi_cmd();
-static void show_config_cmd();
 
 typedef struct {
 	const char *cmd;
 	void (*action)(char *data);
 } command_t;
-
-static command_t network_config_command_table[] = {
-	{"", NULL},
-	{"ble config wifi start     	(num_index)", rk_ble_wifi_init},
-	{"ble config wifi stop      	(num_index)", rk_ble_wifi_deinit},
-	{"ble config wifi looptest  	(num_index)", rk_ble_wifi_init_onoff_test},
-	{"softap config start       	(num_index)", rk_wifi_softap_start},
-	{"softap config stop        	(num_index)", rk_wifi_softap_stop},
-};
-
-static command_t wifi_config_command_table[] = {
-	{"", NULL},
-	{"wifi open                 	(num_index)", rk_wifi_open},
-	{"wifi close                	(num_index)", rk_wifi_close},
-	{"wifi connect              	(num_index input ssid password WPA/WPA3/WEP/NONE)", rk_wifi_connect},
-	{"wifi get saved info       	(num_index)", rk_wifi_getSavedInfo},
-	{"wifi get currit info      	(num_index)", rk_wifi_getConnectionInfo},
-	{"wifi connect with ssid    	(num_index input ssid WPA/WPA3/WEP/NONE)", rk_wifi_connect_with_ssid},
-	{"wifi cancel               	(num_index)", rk_wifi_cancel},
-	{"wifi forget with ssid     	(num_index input ssid WPA/WPA3/WEP/NONE))", rk_wifi_forget_with_ssid},
-	{"wifi discon               	(num_index)", rk_wifi_disconnect},
-	{"wifi version              	(num_index)", rk_wifi_version},
-	{"wifi switch test          	(num_index)", rk_wifi_onoff_test},
-};
 
 static command_t bt_command_table[] = {
 	{"", NULL},
@@ -124,20 +92,6 @@ static command_t bt_command_table[] = {
 	{"bt_server_close           	(num_index)", bt_test_bluetooth_deinit},
 };
 
-static void show_config_cmd() {
-	unsigned int i;
-	for (i = 1; i < sizeof(network_config_command_table) /
-		 sizeof(network_config_command_table[0]); i++)
-		printf("%02d.  %s \n", i, network_config_command_table[i].cmd);
-}
-
-static void show_wifi_cmd() {
-	unsigned int i;
-	for (i = 1; i < sizeof(wifi_config_command_table)
-		 / sizeof(wifi_config_command_table[0]); i++)
-		printf("%02d.  %s \n", i, wifi_config_command_table[i].cmd);
-}
-
 static void show_bt_cmd() {
 	unsigned int i;
 	for (i = 1; i < sizeof(bt_command_table)
@@ -153,86 +107,6 @@ static void show_help(char *bin_name) {
 		printf("\t\"%s %s\":%s.\n", bin_name,
 				menu_command_table[i].cmd,
 				menu_command_table[i].desc);
-}
-
-static void rkwifibt_test_network_config()
-{
-	int i, item_cnt;
-	char *input_start;
-	char cmdBuf[64] = {0};
-	char szBuf[64] = {0};
-	char szBuf_space[64] = {0};
-
-	item_cnt = sizeof(network_config_command_table) / sizeof(command_t);
-	show_config_cmd();
-
-	while (main_loop_flag) {
-		printf("Please input number or help to run: \n");
-
-		memset(szBuf, 0, sizeof(szBuf));
-		if (fgets(szBuf_space, 64, stdin) == NULL)
-			continue;
-
-		if (!strncmp("help", szBuf_space, 4) || !strncmp("h", szBuf_space, 1))
-			show_config_cmd();
-
-		strncpy(szBuf, szBuf_space, strlen(szBuf_space) - 1);
-
-		input_start = strstr(szBuf, "input");
-		if (input_start == NULL) {
-			i = atoi(szBuf);
-			if ((i >= 1) && (i < item_cnt))
-				network_config_command_table[i].action(NULL);
-		} else {
-			memset(cmdBuf, 0, sizeof(cmdBuf));
-			strncpy(cmdBuf, szBuf, strlen(szBuf) - strlen(input_start) - 1);
-			i = atoi(cmdBuf);
-			if ((i >= 1) && (i < item_cnt))
-				network_config_command_table[i].action(input_start + strlen("input") + 1);
-		}
-	}
-
-	return;
-}
-
-static void rkwifibt_test_wifi_config()
-{
-	int i, item_cnt;
-	char *input_start;
-	char cmdBuf[256] = {0};
-	char szBuf[256] = {0};
-	char szBuf_space[256] = {0};
-
-	item_cnt = sizeof(wifi_config_command_table) / sizeof(command_t);
-	show_wifi_cmd();
-
-	while (main_loop_flag) {
-		printf("Please input number or help to run: \n");
-
-		memset(szBuf, 0, sizeof(szBuf));
-		if (fgets(szBuf_space, 64, stdin) == NULL)
-			continue;
-
-		if (!strncmp("help", szBuf_space, 4) || !strncmp("h", szBuf_space, 1))
-			show_wifi_cmd();
-
-		strncpy(szBuf, szBuf_space, strlen(szBuf_space) - 1);
-
-		input_start = strstr(szBuf, "input");
-		if (input_start == NULL) {
-			i = atoi(szBuf);
-			if ((i >= 1) && (i < item_cnt))
-				wifi_config_command_table[i].action(NULL);
-		} else {
-			memset(cmdBuf, 0, sizeof(cmdBuf));
-			strncpy(cmdBuf, szBuf, strlen(szBuf) - strlen(input_start) - 1);
-			i = atoi(cmdBuf);
-			if ((i >= 1) && (i < item_cnt))
-				wifi_config_command_table[i].action(input_start + strlen("input") + 1);
-		}
-	}
-
-	return;
 }
 
 static void rkwifibt_test_bluetooth()
@@ -294,13 +168,6 @@ static void main_loop_stop(int sig)
 int main(int argc, char *argv[])
 {
 	int i, item_cnt;
-	int day, year;
-	char month[4];
-	const char *dateString = __DATE__;
-
-	if (sscanf(dateString, "%s %d %d", month, &day, &year) == 3) {
-		printf("rkwifibt_test version: [%d-%s-%d:%s]\n", year, month, day, __TIME__);
-	}
 
 	struct sigaction sigact = { .sa_handler = main_loop_stop };
 	sigaction(SIGTERM, &sigact, NULL);
